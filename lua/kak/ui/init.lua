@@ -134,7 +134,7 @@ function M.open(opts)
     input = input_handler,
     close = function()
       conn:terminate()
-      handlers.surface:close()
+      if handlers.surface then handlers.surface:close() end
       if ACTIVE == sess then ACTIVE = nil end
     end,
   }, { __index = handlers })

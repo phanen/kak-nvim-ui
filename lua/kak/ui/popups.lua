@@ -104,10 +104,13 @@ function Manager:_menu_rect()
   if not s or s.kind ~= 'float' then return nil end
   if not vim.api.nvim_win_is_valid(s.win) then return nil end
   local cfg = vim.api.nvim_win_get_config(s.win)
-  ---@type kak.ui.popups.layout.Rect
+  local row = assert(cfg.row) ---@as integer
+  local col = assert(cfg.col) ---@as integer
+  local h = assert(cfg.height) ---@as integer
+  local w = assert(cfg.width) ---@as integer
   return {
-    pos = { line = cfg.row, column = cfg.col },
-    size = { line = cfg.height, column = cfg.width },
+    pos = { line = row, column = col },
+    size = { line = h, column = w },
   }
 end
 
@@ -162,7 +165,6 @@ end
 ---@param style kak.ui.protocol.MenuStyle
 ---@return kak.ui.popups.MenuKind
 function Manager:_menu_inline(items, anchor, fg, bg, style)
-  local renderer = self.renderer
   self.menu_state = {
     kind = 'inline',
     items = items,
@@ -172,7 +174,16 @@ function Manager:_menu_inline(items, anchor, fg, bg, style)
     selected = -1,
     style = style,
   }
-  inline.render_menu(renderer.content_buf, self.float_ns, anchor, items, fg, bg, self.faces, -1)
+  inline.render_menu(
+    self.renderer.content_buf,
+    self.float_ns,
+    anchor,
+    items,
+    fg,
+    bg,
+    self.faces,
+    -1
+  )
   return 'inline'
 end
 
@@ -262,9 +273,8 @@ end
 ---@param style kak.ui.protocol.InfoStyle
 ---@return kak.ui.popups.InfoKind
 function Manager:_info_inline(title, content, anchor, face, style)
-  local renderer = self.renderer
   inline.render_info(
-    renderer.content_buf,
+    self.renderer.content_buf,
     self.float_ns,
     anchor,
     title,
@@ -273,7 +283,7 @@ function Manager:_info_inline(title, content, anchor, face, style)
     style,
     self.faces
   )
-  local geom = layout.info_pos(style, anchor, renderer.content_buf, self:editor_dims())
+  local geom = layout.info_pos(style, anchor, self.renderer.content_buf, self:editor_dims())
   self.info_state = { kind = 'inline', row = geom.row, col = anchor.column or 0 }
   return 'inline'
 end
@@ -284,8 +294,7 @@ function Manager:info_hide()
   if state.kind == 'float' and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_close(state.win, true)
   end
-  local renderer = self.renderer
-  inline.clear(renderer.content_buf, self.float_ns)
+  inline.clear(self.renderer.content_buf, self.float_ns)
   self.info_state = nil
 end
 

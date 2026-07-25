@@ -56,10 +56,12 @@ function M.open_menu(items, bg, geom, cache)
   vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 
   local bg_hl = cache:get(bg)
+  local anchor = geom.win_anchor
+  ---@cast anchor 'NW'|'NE'|'SW'|'SE'
   ---@type vim.api.keyset.win_config
   local config = {
     relative = 'editor',
-    anchor = geom.win_anchor,
+    anchor = anchor,
     style = 'minimal',
     width = math.max(geom.width + 2, 4),
     height = geom.height,
@@ -95,10 +97,12 @@ function M.open_info(ns, title, content, face, style, geom, focusable, cache)
   local buf = vim.api.nvim_create_buf(false, true)
 
   local hl = cache:get(face)
+  local anchor = geom.win_anchor
+  ---@cast anchor 'NW'|'NE'|'SW'|'SE'
   ---@type vim.api.keyset.win_config
   local config = {
     relative = 'editor',
-    anchor = geom.win_anchor,
+    anchor = anchor,
     style = 'minimal',
     width = geom.width,
     height = geom.height,

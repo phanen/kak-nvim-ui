@@ -76,6 +76,7 @@ describe('kak renders buffer + grid', function()
         return #lines >= 1 and lines[1] == 'only line'
       end)
     end)
+    screen:snapshot_util()
 
     screen:expect([[
       {MATCH:^.*k//main.*}

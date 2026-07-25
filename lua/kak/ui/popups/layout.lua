@@ -14,7 +14,7 @@
 ---@alias kak.ui.popups.layout.Rect { pos: kak.ui.popups.layout.Dim, size: kak.ui.popups.layout.Dim }
 
 ---@class kak.ui.popups.layout.Geom
----@field win_anchor 'NW'|'NE'|'SW'|'SE'
+---@field win_anchor 'NW'|'NE'|'SW'|'SE'|'inline'
 ---@field row integer
 ---@field col integer
 ---@field height integer

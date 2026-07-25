@@ -4,14 +4,14 @@ local P = require('kak.ui.protocol')
 ---@field ui_options table<string, any>
 ---@field last_force boolean
 
+---@class kak.ui.Handlers
+---@field ctx kak.ui.HandlerContext
+---@field ui_options table<string, any>
+---@field surface kak.ui.surface.Surface?
+---@field faces kak.ui.faces.Cache
+---@field renderer kak.ui.render.Renderer
+---@field popups kak.ui.popups.Manager
 local Handlers = {}
-
-Handlers.ctx = nil ---@type kak.ui.HandlerContext?
-Handlers.ui_options = nil ---@type table<string, any>?
-Handlers.surface = nil ---@type kak.ui.surface.Surface?
-Handlers.faces = nil ---@type kak.ui.faces.Cache?
-Handlers.renderer = nil ---@type kak.ui.render.Renderer?
-Handlers.popups = nil ---@type kak.ui.popups.Manager?
 
 ---@param opts { ctx: kak.ui.HandlerContext, ui_options: table<string, any>, surface?: kak.ui.surface.Surface }
 function Handlers.setup(opts)
@@ -43,7 +43,9 @@ function Handlers:ensure_buf()
     vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = self.renderer.mode_buf })
     vim.api.nvim_set_option_value('swapfile', false, { buf = self.renderer.mode_buf })
   end
-  return self.renderer.content_buf
+  local buf = self.renderer.content_buf
+  ---@cast buf integer
+  return buf
 end
 
 function Handlers:draw(raw)
@@ -53,8 +55,7 @@ function Handlers:draw(raw)
     P.parse_lines('draw', raw[1], 1),
     P.parse_coord('draw', raw[2], 2),
     P.parse_face('draw', raw[3], 3),
-    P.parse_face('draw', raw[4], 4),
-    raw[5]
+    P.parse_face('draw', raw[4], 4)
   )
 end
 
@@ -70,23 +71,30 @@ function Handlers:draw_status(raw)
     P.parse_line('draw_status', raw[4], 4),
     P.parse_face('draw_status', raw[5], 5)
   )
+  ---@cast cursor integer
+  local cursor_i = cursor
+  local style = P.check_enum('draw_status', raw[6] or 'status', valid, 6)
+  ---@cast style kak.ui.protocol.DrawStyle
   self.renderer:set_prompt(
     P.parse_line('draw_status', raw[1], 1),
-    P.parse_line('draw_status', raw[2], 2),
-    cursor,
+    P.parse_lines('draw_status', raw[2], 2),
+    cursor_i,
     P.parse_face('draw_status', raw[5], 5),
-    P.check_enum('draw_status', raw[6] or 'status', valid, 6)
+    style
   )
 end
 
 function Handlers:menu_show(raw)
   P.expect_array('menu_show', raw, 5)
+  local style =
+    P.check_enum('menu_show', raw[5], { prompt = true, search = true, inline = true }, 5)
+  ---@cast style kak.ui.protocol.MenuStyle
   self.popups:menu_show(
     P.parse_lines('menu_show', raw[1], 1),
     P.parse_coord('menu_show', raw[2], 2),
     P.parse_face('menu_show', raw[3], 3),
     P.parse_face('menu_show', raw[4], 4),
-    P.check_enum('menu_show', raw[5], { prompt = true, search = true, inline = true }, 5)
+    style
   )
 end
 
@@ -103,19 +111,21 @@ end
 
 function Handlers:info_show(raw)
   P.expect_array('info_show', raw, 5)
+  local style = P.check_enum('info_show', raw[5], {
+    prompt = true,
+    inline = true,
+    inlineAbove = true,
+    inlineBelow = true,
+    menuDoc = true,
+    modal = true,
+  }, 5)
+  ---@cast style kak.ui.protocol.InfoStyle
   self.popups:info_show(
     P.parse_line('info_show', raw[1], 1),
     P.parse_lines('info_show', raw[2], 2),
     P.parse_coord('info_show', raw[3], 3),
     P.parse_face('info_show', raw[4], 4),
-    P.check_enum('info_show', raw[5], {
-      prompt = true,
-      inline = true,
-      inlineAbove = true,
-      inlineBelow = true,
-      menuDoc = true,
-      modal = true,
-    }, 5)
+    style
   )
 end
 
