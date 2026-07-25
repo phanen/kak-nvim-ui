@@ -22,8 +22,7 @@ local LUA_BODY = table.concat({
   '',
 }, '\n')
 
-local NIL_VALUE = vim.NIL
-  or setmetatable({}, { __tostring = function() return 'NIL' end })
+local NIL_VALUE = vim.NIL or setmetatable({}, { __tostring = function() return 'NIL' end })
 
 local function nil_norm(v)
   if v == NIL_VALUE then return nil end
@@ -55,9 +54,7 @@ end
 ---@return any[]?
 local function first_draw_params(cap)
   for _, m in ipairs(cap) do
-    if m.method == 'draw' and type(m.params) == 'table' and #m.params >= 5 then
-      return m.params
-    end
+    if m.method == 'draw' and type(m.params) == 'table' and #m.params >= 5 then return m.params end
   end
 end
 
@@ -117,9 +114,14 @@ describe('real kak lua filetype', function()
 
     local total, with_rgb = count_atoms(params[1])
     assert(total > 0, 'no atoms in the draw payload')
-    assert(with_rgb > 0, ('lua highlighter did not attach: 0/%d atoms '
-      .. 'carry RGB colors -- filetype detection likely did not fire '
-      .. 'on the file path %q'):format(total, file))
+    assert(
+      with_rgb > 0,
+      (
+        'lua highlighter did not attach: 0/%d atoms '
+        .. 'carry RGB colors -- filetype detection likely did not fire '
+        .. 'on the file path %q'
+      ):format(total, file)
+    )
   end)
 
   it('plugin registers hl_groups in the global namespace, not a private one', function()
@@ -144,8 +146,7 @@ describe('real kak lua filetype', function()
       end)
 
       local content_ns = vim.api.nvim_create_namespace('kak.ui.render.content')
-      local marks = vim.api.nvim_buf_get_extmarks(
-        sess.buf, content_ns, 0, -1, { details = true })
+      local marks = vim.api.nvim_buf_get_extmarks(sess.buf, content_ns, 0, -1, { details = true })
 
       local groups = {}
       for _, m in ipairs(marks) do
@@ -169,14 +170,20 @@ describe('real kak lua filetype', function()
       end
     end
 
-    assert(result.extmarks > 1,
-      ('render.lua only set %d extmark(s); expected many for a multi-line '
-        .. 'lua file'):format(result.extmarks))
-    assert(groups_with_color > 0,
-      ('no registered hl_group carries fg or bg; render.lua is writing '
+    assert(
+      result.extmarks > 1,
+      ('render.lua only set %d extmark(s); expected many for a multi-line ' .. 'lua file'):format(
+        result.extmarks
+      )
+    )
+    assert(
+      groups_with_color > 0,
+      (
+        'no registered hl_group carries fg or bg; render.lua is writing '
         .. 'hl_groups to a non-global namespace so extmarks in '
         .. 'kak.ui.render.content cannot resolve them -- '
-        .. 'extmarks=%d groups=%d'):format(
-        result.extmarks, vim.tbl_count(result.groups)))
+        .. 'extmarks=%d groups=%d'
+      ):format(result.extmarks, vim.tbl_count(result.groups))
+    )
   end)
 end)

@@ -165,9 +165,7 @@ describe('plugin logger routing through json_rpc', function()
         require('kak.ui.protocol').decode,
         { jsonrpc = '2.0', method = method, params = params }
       )
-      if not ok then
-        require('kak.ui.log').log.warn('handler', method, 'error:', tostring(err))
-      end
+      if not ok then require('kak.ui.log').log.warn('handler', method, 'error:', tostring(err)) end
     end
 
     h.with_fake_kak_server(

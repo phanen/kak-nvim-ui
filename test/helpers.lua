@@ -76,9 +76,7 @@ function M.with_screen(width, height)
 end
 
 ---@param path string
-function M.rmdir(path)
-  vim.fs.rm(path, { recursive = true, force = true })
-end
+function M.rmdir(path) vim.fs.rm(path, { recursive = true, force = true }) end
 
 ---@return string
 function M.fake_kak_fixture_path()
@@ -125,41 +123,51 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
 
   local result
   local ok, err = pcall(function()
-    result = exec_lua(function(cmd, env, wire_log, log_level, custom_on_notify, body_src, fwd, n_fwd)
-      -- Set logger env BEFORE requiring the plugin.
-      if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
-        vim.env.KAK_UI_LOG_FILE = wire_log
-        vim.env.KAK_UI_LOG_LEVEL = log_level
-      end
-      local body = assert(loadstring(body_src))
-      local rpc = require('kak.ui.json_rpc')
-      local captured = {}
-      local on_notify
-      if custom_on_notify ~= nil and custom_on_notify ~= vim.NIL and custom_on_notify ~= '' then
-        local user_notify = assert(loadstring(custom_on_notify))
-        on_notify = function(method, params)
-          captured[#captured + 1] = { method, params }
-          user_notify(method, params)
+    result = exec_lua(
+      function(cmd, env, wire_log, log_level, custom_on_notify, body_src, fwd, n_fwd)
+        -- Set logger env BEFORE requiring the plugin.
+        if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
+          vim.env.KAK_UI_LOG_FILE = wire_log
+          vim.env.KAK_UI_LOG_LEVEL = log_level
         end
-      else
-        on_notify = function(method, params) captured[#captured + 1] = { method, params } end
-      end
-      local spawn_opts = {
-        dispatchers = {
-          on_notify = on_notify,
-          on_request = function(method, _params)
-            return nil, { code = -32601, message = 'not implemented: ' .. method }
-          end,
-          on_exit = function() end,
-          on_error = function(code, err) captured[#captured + 1] = { 'error', { code, err } } end,
-        },
-      }
-      if next(env) then spawn_opts.env = env end
-      local sess = rpc.spawn(cmd, spawn_opts)
-      local got = body(sess, captured, unpack(fwd, 1, n_fwd))
-      sess:terminate()
-      return got
-    end, cmd, env, opts.wire_log or '', log_level, custom_on_notify_src or '', string.dump(body), forward, n_forward)
+        local body = assert(loadstring(body_src))
+        local rpc = require('kak.ui.json_rpc')
+        local captured = {}
+        local on_notify
+        if custom_on_notify ~= nil and custom_on_notify ~= vim.NIL and custom_on_notify ~= '' then
+          local user_notify = assert(loadstring(custom_on_notify))
+          on_notify = function(method, params)
+            captured[#captured + 1] = { method, params }
+            user_notify(method, params)
+          end
+        else
+          on_notify = function(method, params) captured[#captured + 1] = { method, params } end
+        end
+        local spawn_opts = {
+          dispatchers = {
+            on_notify = on_notify,
+            on_request = function(method, _params)
+              return nil, { code = -32601, message = 'not implemented: ' .. method }
+            end,
+            on_exit = function() end,
+            on_error = function(code, err) captured[#captured + 1] = { 'error', { code, err } } end,
+          },
+        }
+        if next(env) then spawn_opts.env = env end
+        local sess = rpc.spawn(cmd, spawn_opts)
+        local got = body(sess, captured, unpack(fwd, 1, n_fwd))
+        sess:terminate()
+        return got
+      end,
+      cmd,
+      env,
+      opts.wire_log or '',
+      log_level,
+      custom_on_notify_src or '',
+      string.dump(body),
+      forward,
+      n_forward
+    )
   end)
 
   M.sleep(200)
@@ -281,10 +289,15 @@ function M.assert_log(pat, logfile, nrlines)
     end
   end)
   if matched then return true end
-  error(string.format(
-    'pattern %s not found in last %d lines of %q:\n%s',
-    vim.inspect(pat), nrlines, logfile, table.concat(lines, '\n')
-  ))
+  error(
+    string.format(
+      'pattern %s not found in last %d lines of %q:\n%s',
+      vim.inspect(pat),
+      nrlines,
+      logfile,
+      table.concat(lines, '\n')
+    )
+  )
 end
 
 ---@param pat string Lua pattern
@@ -296,10 +309,15 @@ function M.assert_nolog(pat, logfile, nrlines)
   wait_for_log(logfile, nrlines, function(ls)
     for _, l in ipairs(ls) do
       if l:match(pat) then
-        error(string.format(
-          'pattern %s unexpectedly found in last %d lines of %q:\n%s',
-          vim.inspect(pat), nrlines, logfile, table.concat(ls, '\n')
-        ))
+        error(
+          string.format(
+            'pattern %s unexpectedly found in last %d lines of %q:\n%s',
+            vim.inspect(pat),
+            nrlines,
+            logfile,
+            table.concat(ls, '\n')
+          )
+        )
       end
     end
   end)

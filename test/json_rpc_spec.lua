@@ -15,7 +15,9 @@ describe('ndjson framing', function()
     end, chunk)
   end
 
-  before_each(function() h.exec_lua(function() vim.g._kak_test_buf = '' end) end)
+  before_each(function()
+    h.exec_lua(function() vim.g._kak_test_buf = '' end)
+  end)
 
   it('splits single complete line', function()
     local r = feed('{"a":1}\n')

@@ -95,7 +95,9 @@ local function scan_atoms(lines)
         if type(params) ~= 'table' then goto next end
         if msg.method == 'draw' then
           -- params[1] = lines: Array<Line>
-          for _, l in ipairs(params[1] or {}) do tally_line(l, out, unknown_set) end
+          for _, l in ipairs(params[1] or {}) do
+            tally_line(l, out, unknown_set)
+          end
         elseif msg.method == 'draw_status' then
           -- params[4] = mode_line: Line (already a single array of atoms)
           tally_line(params[4], out, unknown_set)
@@ -104,7 +106,9 @@ local function scan_atoms(lines)
       end
     end
   end
-  for k in pairs(unknown_set) do out.unknown_keys[#out.unknown_keys + 1] = k end
+  for k in pairs(unknown_set) do
+    out.unknown_keys[#out.unknown_keys + 1] = k
+  end
   table.sort(out.unknown_keys)
   return out
 end
@@ -126,9 +130,10 @@ describe('read_log payload util', function()
     assert(lines[2]:match('^<-'), 'second line is inbound')
   end)
 
-  it('returns {} when the log file is missing', function()
-    h.eq({}, h.read_log('/no/such/path/at/all'))
-  end)
+  it(
+    'returns {} when the log file is missing',
+    function() h.eq({}, h.read_log('/no/such/path/at/all')) end
+  )
 
   it('honors opts.n to return only the last N lines', function()
     local log, dir = h.fresh_log()
@@ -160,18 +165,22 @@ describe('JSON-UI payload contents', function()
 
     local counts = scan_atoms(lines)
     assert(counts.atoms > 0, 'expected at least one atom in the wire dump')
-    h.eq(counts.atoms, counts.with_contents,
-      'every atom should declare "contents"')
+    h.eq(counts.atoms, counts.with_contents, 'every atom should declare "contents"')
     assert(counts.with_face > 0, 'expected at least one atom with a face')
-    h.eq(0, counts.with_filename_field,
-      'no atom should carry filename/filetype/buffer_name as a structured field')
+    h.eq(
+      0,
+      counts.with_filename_field,
+      'no atom should carry filename/filetype/buffer_name as a structured field'
+    )
     -- Whatever other keys atoms have, they must not be one of the
     -- fields the plugin would need to identify the current file.
-    assert(#counts.unknown_keys == 0,
-      ('atoms should be exactly {face, contents}; got extra keys: %s')
-        :format(table.concat(counts.unknown_keys, ',')))
-    assert(counts.mentions_sample > 0,
-      ('expected "%s" text inside mode_line atoms'):format(SAMPLE))
+    assert(
+      #counts.unknown_keys == 0,
+      ('atoms should be exactly {face, contents}; got extra keys: %s'):format(
+        table.concat(counts.unknown_keys, ',')
+      )
+    )
+    assert(counts.mentions_sample > 0, ('expected "%s" text inside mode_line atoms'):format(SAMPLE))
   end)
 
   it('mode_line text concatenation is the only reliable source of buffer name', function()
@@ -206,8 +215,9 @@ describe('JSON-UI payload contents', function()
       if candidate then recovered = candidate end
     end
 
-    assert(recovered == SAMPLE,
-      ('expected to recover %q from mode_line text, got %q'):format(
-        SAMPLE, tostring(recovered)))
+    assert(
+      recovered == SAMPLE,
+      ('expected to recover %q from mode_line text, got %q'):format(SAMPLE, tostring(recovered))
+    )
   end)
 end)

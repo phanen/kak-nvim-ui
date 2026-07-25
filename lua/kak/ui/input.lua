@@ -244,17 +244,16 @@ function Handler:enable(buf)
   end
 
   local function map(lhs, rhs)
-    local ok = pcall(
-      vim.keymap.set,
-      { 'n', 'o', 'v', 'x' },
-      lhs,
-      rhs,
-      { buffer = buf, remap = false, silent = true, nowait = true }
-    )
-    if ok then self.mouse_maps[#self.mouse_maps + 1] = lhs end
+    vim.keymap.set({ 'n', 'o', 'v', 'x' }, lhs, rhs, {
+      buffer = buf,
+      remap = false,
+      silent = true,
+      nowait = true,
+    })
+    self.mouse_maps[#self.mouse_maps + 1] = lhs
   end
 
-  pcall(vim.api.nvim_set_option_value, 'mouse', 'a', { buf = buf })
+  vim.o.mouse = 'a'
 
   ---@type string[]
   local mouse_lhs = {
@@ -294,7 +293,7 @@ end
 function Handler:disable()
   if not self.enabled then return end
   self.enabled = false
-  if self.on_key_ns and vim.on_key then pcall(vim.on_key, nil, self.on_key_ns) end
+  if self.on_key_ns and vim.on_key then vim.on_key(nil, self.on_key_ns) end
   self.on_key_ns = nil
   self.on_key_fn = nil
   if self.paste_orig then vim.paste = self.paste_orig end

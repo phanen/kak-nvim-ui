@@ -436,4 +436,3 @@ end
 M._ndjson_feed = ndjson_feed
 
 return M
-

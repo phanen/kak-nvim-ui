@@ -145,3 +145,95 @@ describe('cursor extmark visual width', function()
     h.eq(3, r.end_col)
   end)
 end)
+
+describe('set_prompt is dead state storage (6761b80 behavior)', function()
+  before_each(function() h.setup() end)
+
+  -- Regression: Phase 4 commit 4a0cd6a added a render_prompt method
+  -- that wrote a virt_text overlay at the last visible row. That
+  -- overlay replaced the buffer text at that row (obscuring highlight)
+  -- and required cursor handling tricks that misplace the main
+  -- cursor. 6761b80's set_prompt only stored prompt state without
+  -- rendering anything -- cursor + highlight stayed correct.
+  it('does not write any prompt extmark to the buffer', function()
+    local r = h.exec_lua(function()
+      local m = require('kak.ui.render')
+      local cache = require('kak.ui.faces').new()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'one', 'two' })
+      vim.bo[buf].modifiable = false
+      local render = m.new({ faces = cache })
+      render:set_buf(buf)
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      render:set_prompt(
+        { { face = df, contents = ':' } },
+        { { { face = df, contents = 'edit' } } },
+        4,
+        df,
+        'command'
+      )
+      local prompt_ns = vim.api.nvim_create_namespace('kak.ui.render.prompt')
+      return {
+        prompt_marks = vim.api.nvim_buf_get_extmarks(buf, prompt_ns, 0, -1, {}),
+        state_style = render.prompt_state.style,
+        state_cursor = render.prompt_state.cursor,
+      }
+    end)
+    h.eq(0, #r.prompt_marks)
+    -- State is still recorded for inspection.
+    h.eq('command', r.state_style)
+    h.eq(4, r.state_cursor)
+  end)
+
+  it('preserves the main cursor extmark when set_prompt fires in command mode', function()
+    -- The bug from 4a0cd6a: render_prompt cleared or moved the
+    -- cursor extmark. With the no-op set_prompt the cursor extmark
+    -- placed by draw remains in place, so the cursor stays where
+    -- Kakoune reported and the highlight under it survives.
+    local r = h.exec_lua(function()
+      local m = require('kak.ui.render')
+      local cache = require('kak.ui.faces').new()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'one', 'two', 'three' })
+      vim.bo[buf].modifiable = false
+      local render = m.new({ faces = cache })
+      render:set_buf(buf)
+      local df = { fg = 'red', bg = 'default', underline = 'default', attributes = {} }
+
+      local cursor_ns = vim.api.nvim_create_namespace('kak.ui.render.cursor')
+      local content_ns = vim.api.nvim_create_namespace('kak.ui.render.content')
+
+      render:draw({
+        { { { face = df, contents = 'one' } } },
+        { { { face = df, contents = 'two' } } },
+        { { { face = df, contents = 'three' } } },
+      }, { line = 0, column = 0 }, df, nil)
+      local before = {
+        cursor_marks = vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {}),
+        content_marks = vim.api.nvim_buf_get_extmarks(buf, content_ns, 0, -1, {}),
+      }
+
+      render:set_prompt(
+        { { face = df, contents = ':' } },
+        { { { face = df, contents = 'edit' } } },
+        0,
+        df,
+        'command'
+      )
+
+      local after = {
+        cursor_marks = vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {}),
+        content_marks = vim.api.nvim_buf_get_extmarks(buf, content_ns, 0, -1, {}),
+      }
+
+      return { before = before, after = after }
+    end)
+
+    -- Cursor extmark count and content extmark count are unchanged
+    -- by set_prompt.
+    h.eq(#r.before.cursor_marks, #r.after.cursor_marks)
+    h.eq(#r.before.content_marks, #r.after.content_marks)
+  end)
+end)
