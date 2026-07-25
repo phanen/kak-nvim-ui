@@ -2,44 +2,21 @@
 -- process of the test target nvim, lets the plugin render an initial
 -- `draw()` into its scratch buffer, then asserts the buffer contents.
 
-local helpers = require('nvim-test.helpers')
-local exec_lua = helpers.exec_lua
-local eq = helpers.eq
-local clear = helpers.clear
+local h = require('test.helpers')
+local exec_lua = h.exec_lua
+local eq = h.eq
 
 describe('real Kakoune integration', function()
-  before_each(function()
-    clear()
-    exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
-  end)
-
-  -- Skip the whole suite if `kak` is not installed.
-  local function skip_if_no_kak()
-    local has = exec_lua(function() return vim.fn.executable('kak') == 1 end)
-    if not has then
-      print('SKIP: kak not found on PATH')
-      return true
-    end
-    return false
-  end
+  before_each(function() h.setup() end)
 
   it('renders a multi-line buffer into content + mode buffers', function()
-    if skip_if_no_kak() then return end
-
-    local session = 'kak-test-' .. tostring(os.time()) .. '-' .. tostring(math.random(1, 1e9))
-    local file = '/tmp/kak-int-' .. session .. '.txt'
-    do
-      local f = assert(io.open(file, 'w'))
-      f:write('alpha line\nbeta line\ngamma line\n')
-      f:close()
-    end
+    local file = h.write_file({ 'alpha line', 'beta line', 'gamma line' })
 
     local result = exec_lua(function(f)
       local kak = require('kak.ui')
       local sess = kak.open({
         cmd = { 'kak' },
         extra_args = { '-e', 'edit ' .. f },
-        log_level = 'error',
       })
       local got = nil
       vim.wait(3000, function()
@@ -48,7 +25,8 @@ describe('real Kakoune integration', function()
         -- Mode line often arrives a tick later than the content draw,
         -- so re-check until both are populated.
         local mode = vim.api.nvim_buf_get_lines(sess.renderer.mode_buf, 0, -1, false)
-        if table.concat(mode, '\n'):find('kak%-int%-', 1, false) then
+        local basename = vim.fn.fnamemodify(f, ':t')
+        if #mode > 0 and mode[1]:find(basename, 1, true) then
           got = { content = lines, mode = mode }
           return true
         end
@@ -66,30 +44,19 @@ describe('real Kakoune integration', function()
       eq('beta line', result.content[2])
       eq('gamma line', result.content[3])
       local mode_joined = table.concat(result.mode, '\n')
-      assert(
-        mode_joined:find('kak%-int%-', 1, false),
-        'expected filename in mode, got: ' .. mode_joined
-      )
+      local basename = h.fn.fnamemodify(file, ':t')
+      assert(mode_joined:find(basename, 1, true), 'expected basename in mode, got: ' .. mode_joined)
     end
   end)
 
   it('updates buffer when file changes mid-session', function()
-    if skip_if_no_kak() then return end
-
-    local session = 'kak-test-' .. tostring(os.time()) .. '-' .. tostring(math.random(1, 1e9))
-    local file = '/tmp/kak-int-upd-' .. session .. '.txt'
-    do
-      local f = assert(io.open(file, 'w'))
-      f:write('initial content\n')
-      f:close()
-    end
+    local file = h.write_file({ 'initial content' })
 
     local result = exec_lua(function(f)
       local kak = require('kak.ui')
       local sess = kak.open({
         cmd = { 'kak' },
         extra_args = { '-e', 'edit ' .. f },
-        log_level = 'error',
       })
       local got = nil
       vim.wait(3000, function()
@@ -111,28 +78,24 @@ describe('real Kakoune integration', function()
   end)
 
   it('forwards ESC key to kakoune, exiting insert-like mode', function()
-    if skip_if_no_kak() then return end
-
     -- Wrap a child kak with a tee process that records the wire bytes
     -- so we can observe the `keys` notification that we generate.
-    local dir = '/tmp/kak-capture-' .. tostring(os.time()) .. '-' .. tostring(math.random(1, 1e9))
-    os.execute('mkdir -p ' .. dir)
+    local dir = h.fn.tempname()
+    h.fn.mkdir(dir, 'p')
     local log = dir .. '/log.txt'
-    local sh_path = dir .. '/kak.sh'
-    local f = assert(io.open(sh_path, 'w'))
-    f:write([[
-      #!/bin/sh
-      exec /usr/bin/kak -ui json "$@" 2>> ]] .. log .. [[ | tee -a ]] .. log .. [[ >/dev/null
-    ]])
-    f:close()
-    os.execute('chmod +x ' .. sh_path)
+    local sh_path = h.write_executable(
+      '#!/bin/sh\n'
+        .. 'exec /usr/bin/kak -ui json "$@" 2>> '
+        .. log
+        .. ' | tee -a '
+        .. log
+        .. ' >/dev/null\n'
+    )
 
     local result = exec_lua(function(capture)
-      local kak = require('kak.ui')
       local captured = { keys = {}, mouse = {}, other = {} }
       local last_keys = nil
       local sess = require('kak.ui.json_rpc').spawn({ capture }, {
-        log_level = 'error',
         dispatchers = {
           on_notify = function(method, params)
             if method == 'keys' then
@@ -202,30 +165,19 @@ describe('real Kakoune integration', function()
 end)
 
 describe('input handler routing', function()
-  before_each(function()
-    clear()
-    exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
-  end)
+  before_each(function() h.setup() end)
 
   it('maps mouse events to mouse_press / scroll (not keys)', function()
     -- Spawn a fake-server shaped like kakoune and verify routing.
-    local fake = '/tmp/kak-input-fake-'
-      .. tostring(os.time())
-      .. '-'
-      .. tostring(math.random(1, 1e9))
-    local f = assert(io.open(fake, 'w'))
-    f:write([[
+    local fake = h.write_executable([[
       printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{}]}\n'
       sleep 5
     ]])
-    f:close()
-    os.execute('chmod +x ' .. fake)
 
     local seen = exec_lua(function(fake_path)
       local rpc = require('kak.ui.json_rpc')
       local log = {}
       local conn = rpc.spawn({ fake_path }, {
-        log_level = 'error',
         dispatchers = {
           on_notify = function(method, params) log[#log + 1] = { method, params } end,
           on_request = function() end,
@@ -316,10 +268,7 @@ describe('input handler routing', function()
 end)
 
 describe('info popup positioning', function()
-  before_each(function()
-    clear()
-    exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
-  end)
+  before_each(function() h.setup() end)
 
   it('menuDoc is placed at the right side of the editor', function()
     local pos = exec_lua(function()
@@ -398,7 +347,7 @@ describe('info popup positioning', function()
     end)
     -- modal col should be roughly centered (col ~= (160 - width) / 2).
     local expected_center = math.floor((160 - pos.width) / 2)
-    -- Allow ±5 cells of slack for integer rounding.
+    -- Allow +/-5 cells of slack for integer rounding.
     assert(
       math.abs(pos.col - expected_center) <= 5,
       'expected modal centered, got col=' .. tostring(pos.col) .. ' want~' .. expected_center

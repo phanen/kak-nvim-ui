@@ -3,19 +3,13 @@
 -- serialized string. nvim-test supports passing a function and
 -- captures simple return values.
 
-local helpers = require('nvim-test.helpers')
-local exec_lua = helpers.exec_lua
-local eq = helpers.eq
-local clear = helpers.clear
+local h = require('test.helpers')
 
 describe('protocol decode (kakoune 2026.05+)', function()
-  before_each(function()
-    clear()
-    exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
-  end)
+  before_each(function() h.setup() end)
 
   it('decodes draw with cursor_pos and widget_columns', function()
-    local res = exec_lua(
+    local res = h.exec_lua(
       function()
         return require('kak.ui.protocol').decode({
           jsonrpc = '2.0',
@@ -42,18 +36,18 @@ describe('protocol decode (kakoune 2026.05+)', function()
         })
       end
     )
-    eq('draw', res.method)
-    eq(0, res.params.cursor_pos.line)
-    eq(5, res.params.cursor_pos.column)
-    eq(0, res.params.widget_columns)
-    eq('#ebdbb2', res.params.lines[1][1].face.fg)
-    eq('#282828', res.params.lines[1][1].face.bg)
+    h.eq('draw', res.method)
+    h.eq(0, res.params.cursor_pos.line)
+    h.eq(5, res.params.cursor_pos.column)
+    h.eq(0, res.params.widget_columns)
+    h.eq('#ebdbb2', res.params.lines[1][1].face.fg)
+    h.eq('#282828', res.params.lines[1][1].face.bg)
   end)
 
   it(
     'decodes draw_status with prompt, content, cursor_pos, mode_line, default_face, style',
     function()
-      local res = exec_lua(
+      local res = h.exec_lua(
         function()
           return require('kak.ui.protocol').decode({
             jsonrpc = '2.0',
@@ -94,16 +88,16 @@ describe('protocol decode (kakoune 2026.05+)', function()
           })
         end
       )
-      eq('command', res.params.style)
-      eq(':', res.params.prompt[1].contents)
-      eq('hello', res.params.content[1].contents)
-      eq(1, res.params.cursor_pos)
-      eq('NORMAL', res.params.mode_line[1].contents)
+      h.eq('command', res.params.style)
+      h.eq(':', res.params.prompt[1].contents)
+      h.eq('hello', res.params.content[1].contents)
+      h.eq(1, res.params.cursor_pos)
+      h.eq('NORMAL', res.params.mode_line[1].contents)
     end
   )
 
   it('decodes menu_show', function()
-    local res = exec_lua(
+    local res = h.exec_lua(
       function()
         return require('kak.ui.protocol').decode({
           jsonrpc = '2.0',
@@ -125,13 +119,13 @@ describe('protocol decode (kakoune 2026.05+)', function()
         })
       end
     )
-    eq('inline', res.params.style)
-    eq(1, #res.params.items)
-    eq('#000000', res.params.fg.fg)
+    h.eq('inline', res.params.style)
+    h.eq(1, #res.params.items)
+    h.eq('#000000', res.params.fg.fg)
   end)
 
   it('decodes refresh', function()
-    local res = exec_lua(
+    local res = h.exec_lua(
       function()
         return require('kak.ui.protocol').decode({
           jsonrpc = '2.0',
@@ -140,12 +134,12 @@ describe('protocol decode (kakoune 2026.05+)', function()
         })
       end
     )
-    eq(true, res.params.force)
+    h.eq(true, res.params.force)
   end)
 
   it('rejects unknown method', function()
     local ok = pcall(function()
-      exec_lua(
+      h.exec_lua(
         function()
           require('kak.ui.protocol').decode({
             jsonrpc = '2.0',
@@ -156,12 +150,12 @@ describe('protocol decode (kakoune 2026.05+)', function()
       )
     end)
     -- `set_cursor` was removed in kakoune 2026.
-    eq(false, ok)
+    h.eq(false, ok)
   end)
 
   it('rejects bad status style', function()
     local ok = pcall(function()
-      exec_lua(
+      h.exec_lua(
         function()
           require('kak.ui.protocol').decode({
             jsonrpc = '2.0',
@@ -178,12 +172,12 @@ describe('protocol decode (kakoune 2026.05+)', function()
         end
       )
     end)
-    eq(false, ok)
+    h.eq(false, ok)
   end)
 
   it('rejects bad jsonrpc version', function()
     local ok = pcall(function()
-      exec_lua(
+      h.exec_lua(
         function()
           require('kak.ui.protocol').decode({
             jsonrpc = '1.0',
@@ -193,11 +187,11 @@ describe('protocol decode (kakoune 2026.05+)', function()
         end
       )
     end)
-    eq(false, ok)
+    h.eq(false, ok)
   end)
 
   it('tolerates vim.NIL face fields (JSON null)', function()
-    local res = exec_lua(
+    local res = h.exec_lua(
       function()
         return require('kak.ui.protocol').decode({
           jsonrpc = '2.0',
@@ -213,14 +207,14 @@ describe('protocol decode (kakoune 2026.05+)', function()
         })
       end
     )
-    eq('status', res.params.style)
-    eq(nil, res.params.default_face.fg)
-    eq(nil, res.params.default_face.bg)
-    eq(0, #res.params.default_face.attributes)
+    h.eq('status', res.params.style)
+    h.eq(nil, res.params.default_face.fg)
+    h.eq(nil, res.params.default_face.bg)
+    h.eq(0, #res.params.default_face.attributes)
   end)
 
   it('tolerates draw with vim.NIL faces', function()
-    local res = exec_lua(
+    local res = h.exec_lua(
       function()
         return require('kak.ui.protocol').decode({
           jsonrpc = '2.0',
@@ -235,7 +229,7 @@ describe('protocol decode (kakoune 2026.05+)', function()
         })
       end
     )
-    eq(nil, res.params.default_face)
-    eq(nil, res.params.padding_face)
+    h.eq(nil, res.params.default_face)
+    h.eq(nil, res.params.padding_face)
   end)
 end)
