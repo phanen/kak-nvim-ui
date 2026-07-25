@@ -62,7 +62,10 @@ function Handlers:draw_status(raw)
   ---@cast cursor integer
   local valid = { command = true, search = true, prompt = true, status = true }
   local prompt = P.parse_line('draw_status', raw[1], 1)
-  local content = P.parse_lines('draw_status', raw[2], 2)
+  -- `content` is a single `Line` (not `Lines`) per the JSON-UI protocol:
+  -- `draw_status(Line prompt, Line content, ...)`. Using `parse_lines` here
+  -- treated each content atom as a line and silently dropped the typed text.
+  local content = P.parse_line('draw_status', raw[2], 2)
   local face = P.parse_face('draw_status', raw[5], 5)
   -- check_enum runs after parsing the face so wire_log_spec's unknown
   -- style test still produces both the 'handler' and 'draw_status'
@@ -82,8 +85,13 @@ function Handlers:draw_status(raw)
     end
   end
   self.renderer.current_mode = mode
+  -- `prompt_active` lets `render._place_cursor` skip the content cursor
+  -- while the user is in the command/search/prompt line, so the real
+  -- nvim cursor stays in the status float (ui2-style cmdline overlay).
+  self.renderer.prompt_active = cursor >= 0
   require('kak.ui.statusbar').render(
     self.surface,
+    self.renderer,
     prompt,
     content,
     cursor,

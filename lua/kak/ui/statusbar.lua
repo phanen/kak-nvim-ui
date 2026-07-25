@@ -57,7 +57,7 @@ end
 --- dropped if it does not fit; truncating mode_line is left for a later
 --- revision.
 ---@param prompt kak.ui.protocol.Line?
----@param content kak.ui.protocol.Lines?
+---@param content kak.ui.protocol.Line?
 ---@param mode_line kak.ui.protocol.Line?
 ---@param default_face kak.ui.faces.Face?
 ---@param cols integer
@@ -70,14 +70,12 @@ function M.build_line(prompt, content, mode_line, default_face, cols, cache)
   local content_parts = {}
   local content_spans = {}
   local byte = 0
-  for _, line in ipairs(content or {}) do
-    for _, atom in ipairs(line) do
-      local text = clean(atom.contents or '')
-      content_parts[#content_parts + 1] = text
-      local merged = faces.merge(default_face, atom.face)
-      content_spans[#content_spans + 1] = { byte, byte + #text, cache:get(merged) }
-      byte = byte + #text
-    end
+  for _, atom in ipairs(content or {}) do
+    local text = clean(atom.contents or '')
+    content_parts[#content_parts + 1] = text
+    local merged = faces.merge(default_face, atom.face)
+    content_spans[#content_spans + 1] = { byte, byte + #text, cache:get(merged) }
+    byte = byte + #text
   end
   local content_str = table.concat(content_parts)
 
@@ -133,14 +131,25 @@ end
 
 --- Render the kak status line into the surface's status float.
 ---@param surface kak.ui.surface.Surface?
+---@param renderer kak.ui.render.Renderer?
 ---@param prompt kak.ui.protocol.Line?
----@param content kak.ui.protocol.Lines?
+---@param content kak.ui.protocol.Line?
 ---@param cursor_pos integer 0-based codepoint column into content, or -1
 ---@param mode_line kak.ui.protocol.Line?
 ---@param default_face kak.ui.faces.Face?
 ---@param _style kak.ui.protocol.DrawStyle
 ---@param cache kak.ui.faces.Cache
-function M.render(surface, prompt, content, cursor_pos, mode_line, default_face, _style, cache)
+function M.render(
+  surface,
+  renderer,
+  prompt,
+  content,
+  cursor_pos,
+  mode_line,
+  default_face,
+  _style,
+  cache
+)
   if not surface then return end
   surface:ensure_status_float()
   local buf, win = surface.status_buf, surface.status_win
@@ -167,32 +176,24 @@ function M.render(surface, prompt, content, cursor_pos, mode_line, default_face,
     end
   end
 
-  -- Prompt cursor: reverse extmark covering the codepoint at
-  -- `prompt_len + cursor_byte`. Past end -> reverse space.
+  -- Real nvim cursor (ui2-style): in prompt/command/search mode move it
+  -- into the status float at the prompt-cursor cell; in status mode leave
+  -- it in the content buffer at the last draw cursor. `render._place_cursor`
+  -- skips the content cursor while `renderer.prompt_active` is set so a
+  -- later `draw` does not yank it back into the content window.
   if cursor_pos >= 0 then
+    if renderer then renderer.prompt_active = true end
     local cbyte_in_content = render.column_to_byte(built.content_str, cursor_pos)
     local cbyte = built.prompt_len + cbyte_in_content
-    local clen
-    if cbyte_in_content >= #built.content_str then
-      clen = 1
-      cbyte = built.prompt_len + #built.content_str
-    else
-      clen = render.codepoint_width(built.content_str, cbyte_in_content)
-    end
-    local cursor_face = {
-      fg = (default_face and default_face.bg) or 'default',
-      bg = (default_face and default_face.fg) or 'default',
-      underline = 'default',
-      attributes = { 'reverse' },
-    }
-    local cursor_hl = cache:get(cursor_face)
-    local end_col = math.min(cbyte + clen, #built.text)
-    if end_col <= cbyte then end_col = math.min(cbyte + 1, #built.text) end
-    pcall(vim.api.nvim_buf_set_extmark, buf, NS, 0, cbyte, {
-      end_col = end_col,
-      hl_group = cursor_hl,
-      right_gravity = false,
-    })
+    if cbyte_in_content >= #built.content_str then cbyte = built.prompt_len + #built.content_str end
+    pcall(vim.api.nvim_win_set_cursor, win, { 1, cbyte })
+    pcall(vim.api.nvim__redraw, { cursor = true, win = win, flush = true })
+  else
+    -- Status mode: the content cursor is owned by `render._place_cursor`
+    -- (prompt_active=false lets it run). Do not touch the cursor here --
+    -- an extra `nvim__redraw({cursor=...})` flush surfaces nvim's
+    -- "scratch buffer" notice over the status float.
+    if renderer then renderer.prompt_active = false end
   end
 
   if default_face then

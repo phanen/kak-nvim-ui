@@ -13,10 +13,13 @@ local function with_handlers(body_src)
     local stub_calls = {}
     package.loaded['kak.ui.statusbar'] = {
       calls = stub_calls,
-      compose = function() return '' end,
-      render = function(win, prompt, content, cursor, mode_line, face, style)
+      build_line = function() return { text = '', spans = {}, prompt_len = 0, content_str = '' } end,
+      render = function(surface, renderer, prompt, content, cursor, mode_line, face, style, cache)
+        -- `renderer`/`cache` carry functions / may be nil; exec_lua cannot
+        -- marshal function values across the RPC boundary, so omit them.
+        -- The assertions only inspect the parsed atoms below.
         stub_calls[#stub_calls + 1] = {
-          win = win,
+          surface = surface,
           prompt = prompt,
           content = content,
           cursor = cursor,
@@ -150,8 +153,8 @@ describe('handler dispatch (kakoune 2026.05+)', function()
       Handlers:draw_status({
         { { face = { fg = 'rgb:ebdbb2', bg = 'default', underline = 'default', attributes = {} },
             contents = ':' } },
-        { { { face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
-              contents = 'hello' } } },
+        { { face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
+            contents = 'hello' } },
         1,
         { { face = { fg = 'rgb:282828', bg = 'rgb:ebdbb2', underline = 'default', attributes = {} },
             contents = 'NORMAL' } },
@@ -162,11 +165,12 @@ describe('handler dispatch (kakoune 2026.05+)', function()
     h.eq(0, #res.renderer)
     h.eq(1, #res.statusbar)
     local call = res.statusbar[1]
-    -- win may be nil because the test fixture sets Handlers.surface = nil;
+    -- surface is nil because the test fixture sets Handlers.surface = nil;
     -- the stub still records the call regardless.
-    h.eq(nil, call.win)
+    h.eq(nil, call.surface)
     h.eq(':', call.prompt[1].contents)
-    h.eq('hello', call.content[1][1].contents)
+    -- `content` is a single `Line` (not `Lines`) per the JSON-UI protocol.
+    h.eq('hello', call.content[1].contents)
     h.eq(1, call.cursor)
     h.eq('NORMAL', call.mode_line[1].contents)
     h.eq('command', call.style)

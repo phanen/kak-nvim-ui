@@ -199,7 +199,7 @@ describe('statusbar.build_line', function()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
       local built = s.build_line(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'hello' } } },
+        { { face = df, contents = 'hello' } },
         { { face = df, contents = 'NORMAL' } },
         df,
         40,
@@ -229,7 +229,7 @@ describe('statusbar.build_line', function()
         local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
         return s.build_line(
           { { face = df, contents = ':\n' } },
-          { { { face = df, contents = 'edit foo\n' } } },
+          { { face = df, contents = 'edit foo\n' } },
           { { face = df, contents = 'NORMAL\n' } },
           df,
           40,
@@ -254,7 +254,7 @@ describe('statusbar.build_line', function()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
       return s.build_line(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'ab' }, { face = df, contents = 'cd' } } },
+        { { face = df, contents = 'ab' }, { face = df, contents = 'cd' } },
         { { face = df, contents = 'XY' } },
         df,
         20,
@@ -287,7 +287,7 @@ describe('statusbar.build_line', function()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
       return s.build_line(
         { { face = df, contents = 'this-prompt' } },
-        { { { face = df, contents = string.rep('x', 50) } } },
+        { { face = df, contents = string.rep('x', 50) } },
         { { face = df, contents = 'LONG_MODE_LINE' } },
         df,
         10,
@@ -307,7 +307,7 @@ describe('statusbar.build_line', function()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
       return s.build_line(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'hello' } } },
+        { { face = df, contents = 'hello' } },
         nil,
         df,
         40,
@@ -331,7 +331,7 @@ describe('statusbar.build_line', function()
         local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
         local built = s.build_line(
           { { face = df, contents = ':' } },
-          { { { face = df, contents = 'héllo' } } },
+          { { face = df, contents = 'héllo' } },
           nil,
           df,
           40,

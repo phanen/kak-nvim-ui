@@ -17,6 +17,7 @@
 ---@field set_lines_cache string[]
 ---@field last_cursor kak.ui.render.CursorPos
 ---@field current_mode string
+---@field prompt_active boolean
 ---@field set_buf fun(self: kak.ui.render.Renderer, buf: integer)
 ---@field draw fun(self: kak.ui.render.Renderer, lines: kak.ui.protocol.Lines, cursor_pos: kak.ui.render.CursorPos?, default_face: kak.ui.faces.Face?, padding_face: kak.ui.faces.Face?)
 ---@field _place_cursor fun(self: kak.ui.render.Renderer, buf: integer, coord: kak.ui.render.CursorPos, face_for_default: kak.ui.faces.Face?)
@@ -145,6 +146,7 @@ function M.new(opts)
     set_lines_cache = {},
     last_cursor = { line = 0, column = 0 },
     current_mode = 'normal',
+    prompt_active = false,
   }, Renderer)
 end
 
@@ -220,6 +222,10 @@ end
 ---@param coord kak.ui.render.CursorPos
 ---@param _face_for_default kak.ui.faces.Face?
 function Renderer:_place_cursor(buf, coord, _face_for_default)
+  -- While the user is in the command/search/prompt line the real nvim
+  -- cursor lives in the status float (see `statusbar.render`); skip the
+  -- content cursor so a later `draw` does not yank it back.
+  if self.prompt_active then return end
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(coord.line, total - 1))
   local lines = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)

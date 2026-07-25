@@ -59,14 +59,16 @@ describe('kak renders buffer + grid', function()
     end)
 
     -- Layout: 3 content rows + 20 tildes + status float at the last
-    -- row. The float renders the kak mode_line (filename, line:col,
-    -- sel count, client id). Cursor col 0 puts `^` before "alpha".
+    -- row. The float carries the status message body (here, the
+    -- default "scratch buffer" notice kak emits on a freshly opened
+    -- buffer). mode_line is dropped because content+mode exceed
+    -- cols. Cursor col 0 puts `^` before "alpha".
     screen:expect([[
       {MATCH:alpha line}
       {MATCH:beta line}
       {MATCH:gamma line}
       {MATCH:.*~.*}|*20
-      {MATCH:.*1:1.*}
+      {MATCH:.*scratch.*}
     ]])
   end)
 
@@ -85,7 +87,7 @@ describe('kak renders buffer + grid', function()
     screen:expect([[
       {MATCH:only line}
       {MATCH:.*~.*}|*22
-      {MATCH:.*1:1.*}
+      {MATCH:.*scratch.*}
     ]])
   end)
 
@@ -99,11 +101,12 @@ describe('kak renders buffer + grid', function()
     end)
 
     -- Empty file: cursor row 0 is empty (^), all other content rows
-    -- are tildes, status float at the last row carries line:col.
+    -- are tildes. The status float shows kak's scratch-buffer notice
+    -- because no real filename is bound yet.
     screen:expect([[
       {MATCH:^}
       {MATCH:.*~.*}|*22
-      {MATCH:.*1:1.*}
+      {MATCH:.*scratch.*}
     ]])
   end)
 
@@ -126,7 +129,7 @@ describe('kak renders buffer + grid', function()
       {MATCH:second%-A}
       {MATCH:second%-B}
       {MATCH:.*~.*}|*21
-      {MATCH:.*1:1.*}
+      {MATCH:.*scratch.*}
     ]])
   end)
 
