@@ -40,7 +40,9 @@ local function resolve_log_path(name)
   local override = os.getenv('KAK_UI_LOG_FILE')
   if override and override ~= '' then return override end
   if has_real_log() then
-    return vim.fs.joinpath(vim.fn.stdpath('log'), name:lower() .. '.log')
+    local logdir = vim.fn.stdpath('log')
+    ---@cast logdir string
+    return vim.fs.joinpath(logdir, string.lower(name) .. '.log')
   end
   return nil
 end
@@ -82,7 +84,7 @@ local function make_logger()
     if level < threshold then return end
     local argc = select('#', ...)
     if argc == 0 then return end
-    local info = debug.getinfo(3, 'Sl')
+    local info = assert(debug.getinfo(3, 'Sl'))
     local header = string.format(
       '[%s][%s] %s:%s',
       LABEL[level] or 'INFO',
