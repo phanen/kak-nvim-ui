@@ -240,9 +240,9 @@ describe('KAK_UI_LOG_FILE env override', function()
     h.assert_log('env%-override%-marker', log)
     local default_log = h.fn.stdpath('log') .. '/kak-ui.log'
     if h.fn.filereadable(default_log) == 1 then
-      local content = h.fn.readfile(default_log)
+      local content = table.concat(h.fn.readfile(default_log), '\n')
       assert(
-        not content:find('env%-override%-marker', 1),
+        not content:find('env%-override%-marker', 1, true),
         'default stdpath log must not receive env-override writes'
       )
     end
