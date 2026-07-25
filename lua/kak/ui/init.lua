@@ -174,6 +174,31 @@ function M.open(opts)
     closed = false,
     close = function(self)
       if self.closed then return end
+      -- Find a survivor BEFORE tearing down. When the closing
+      -- session is the current one and other live sessions exist,
+      -- we must switch `current_session` synchronously so the
+      -- global on_key listener (which consults `current_session`
+      -- for routing) immediately points at the survivor. Without
+      -- this, the user sits in the dead window with no input
+      -- routing. `M.set_current` is a Lua-var write -- safe even
+      -- from an off-thread on_exit callback.
+      ---@type kak.ui.Session?
+      local survivor = nil
+      if current_session == self then
+        for _, s in pairs(SESSIONS) do
+          if
+            s ~= self
+            and not s.closed
+            and s.surface
+            and s.surface.content_win
+            and vim.api.nvim_win_is_valid(s.surface.content_win)
+          then
+            survivor = s
+            break
+          end
+        end
+        if survivor then M.set_current(survivor) end
+      end
       self.closed = true
       if self.conn and not self.conn:is_closing() then self.conn:terminate() end
       if self.surface then
@@ -183,7 +208,27 @@ function M.open(opts)
       if self.input then self.input:disable() end
       pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
       SESSIONS[self.id] = nil
+      -- Only clear `current_session` if it still refers to us. The
+      -- survivor-switch above already replaced it, so this guard
+      -- is what handles the no-survivor case.
       if current_session == self then current_session = nil end
+      -- Focus move + dead-window removal are nvim API calls that
+      -- may run from `on_exit` (off the main loop). The
+      -- synchronous Lua-var write above already restored input
+      -- routing; this schedule takes care of the visible focus so
+      -- the user lands in the survivor's window, not the dead
+      -- frozen frame.
+      if survivor then
+        vim.schedule(function()
+          if
+            survivor.surface
+            and survivor.surface.content_win
+            and vim.api.nvim_win_is_valid(survivor.surface.content_win)
+          then
+            pcall(vim.api.nvim_set_current_win, survivor.surface.content_win)
+          end
+        end)
+      end
     end,
   }
   -- Now that `sess` exists, hook the handlers back to it so

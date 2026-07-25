@@ -194,11 +194,21 @@ function Surface:close()
   end
   self.status_win = nil
   self.status_buf = nil
-  -- Detach: drop our references to the buffers/window. The window itself
-  -- stays open so external code (e.g. screen tests) can keep observing
-  -- the rendered buffer; bufhidden=wipe handles cleanup when nvim
-  -- eventually unloads the buffers. Connection terminate is driven by
-  -- the VimLeavePre autocmd installed in init.lua.
+  -- Close the dead content window when it is NOT the last window in
+  -- its tabpage. After a `:q` in one of several kak splits, the
+  -- surviving splits are still alive and the user must NOT be left
+  -- staring at a frozen frame in the dead window. The single-window
+  -- case is left untouched: closing the only window would unload
+  -- the buffer (bufhidden=wipe) and force an unwanted new empty
+  -- buffer; the user can `:bd` manually instead.
+  if self.content_win and vim.api.nvim_win_is_valid(self.content_win) then
+    local tab = vim.api.nvim_win_get_tabpage(self.content_win)
+    local n_wins = #vim.api.nvim_tabpage_list_wins(tab)
+    if n_wins > 1 then pcall(vim.api.nvim_win_close, self.content_win, true) end
+  end
+  -- Detach: drop our references to the buffers/window. The buffer is
+  -- wiped by nvim once the last window displaying it closes (or
+  -- remains alive if the user kept it on screen).
   self.content_win = nil
   self.content_buf = nil
   self.rpc = nil

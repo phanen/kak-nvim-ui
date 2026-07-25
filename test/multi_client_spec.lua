@@ -335,6 +335,103 @@ describe('multi client', function()
     h.eq(true, capture.b_still_alive)
   end)
 
+  -- Regression for the frozen-frame bug. After `:q` in the current
+  -- session, the dead window used to stay open with the session's
+  -- last frame and input went nowhere (because `session_for_buf`
+  -- resolved to nil and `current_session` was also nil). The fix:
+  -- `Session:close()` synchronously switches `current_session` to
+  -- a surviving session, schedules an `nvim_set_current_win` to
+  -- land in the survivor's window, and `Surface:close()` removes
+  -- the dead content_win when there is a sibling.
+  it('closing the current session switches current + focus to a survivor', function()
+    local capture = h.exec_lua(function(spec_a_src, spec_b_src)
+      local ui = require('kak.ui')
+      local helpers = require('test.helpers')
+
+      local function write_spec(src)
+        local p = vim.fn.tempname() .. '.lua'
+        local f = assert(io.open(p, 'w'))
+        f:write(src)
+        f:close()
+        return p
+      end
+      local spec_a = write_spec(spec_a_src)
+      local spec_b = write_spec(spec_b_src)
+      local nvim_path = helpers.fake_kak_nvim_path()
+      local fixture = helpers.fake_kak_fixture_path()
+
+      local function open_fake(spec_path, name)
+        vim.cmd('vsplit')
+        return ui.open({
+          cmd = { nvim_path, '-l', fixture, spec_path },
+          session = name,
+          extra_args = { '-e', 'set global kak_session ' .. name },
+        })
+      end
+
+      local sess_a = open_fake(spec_a, 'a')
+      vim.cmd('wincmd h')
+      local sess_b = open_fake(spec_b, 'b')
+      local win_a = sess_a.surface.content_win
+      local win_b = sess_b.surface.content_win
+      local buf_a = sess_a.id
+      local buf_b = sess_b.id
+
+      -- Sanity: sess_b was just opened, so it owns the current slot
+      -- and the focus is on its window.
+      local before = {
+        current_is_b = ui.current() == sess_b,
+        focused_is_b = vim.api.nvim_get_current_win() == win_b,
+      }
+
+      -- Close the CURRENT session (sess_b).
+      sess_b:close()
+
+      -- Synchronously (no vim.wait): the registry slot has flipped
+      -- to the survivor and the dead window is gone.
+      local sync = {
+        current_is_a = ui.current() == sess_a,
+        win_b_invalid = not (win_b and vim.api.nvim_win_is_valid(win_b)),
+        sess_b_gone_from_registry = ui.session_for_buf(buf_b) == nil,
+        sess_a_still_resolvable = ui.session_for_buf(buf_a) == sess_a,
+        sess_a_alive = not sess_a.conn:is_closing(),
+        win_a_still_valid = win_a and vim.api.nvim_win_is_valid(win_a) or false,
+      }
+
+      -- Asynchronously (after the scheduled focus move fires): the
+      -- focused window is the survivor's window.
+      local focused = vim.wait(500, function() return vim.api.nvim_get_current_win() == win_a end)
+      local final_focus = vim.api.nvim_get_current_win()
+
+      os.remove(spec_a)
+      os.remove(spec_b)
+
+      return {
+        before_current_is_b = before.current_is_b,
+        before_focused_is_b = before.focused_is_b,
+        sync_current_is_a = sync.current_is_a,
+        sync_win_b_invalid = sync.win_b_invalid,
+        sync_sess_b_gone = sync.sess_b_gone_from_registry,
+        sync_sess_a_resolvable = sync.sess_a_still_resolvable,
+        sync_sess_a_alive = sync.sess_a_alive,
+        sync_win_a_valid = sync.win_a_still_valid,
+        async_focused = focused,
+        final_focus_equals_a = final_focus == win_a,
+      }
+    end, FAKE_KAK_SPEC, FAKE_KAK_SPEC_B)
+
+    h.eq(true, capture.before_current_is_b)
+    h.eq(true, capture.before_focused_is_b)
+    h.eq(true, capture.sync_current_is_a)
+    h.eq(true, capture.sync_win_b_invalid)
+    h.eq(true, capture.sync_sess_b_gone)
+    h.eq(true, capture.sync_sess_a_resolvable)
+    h.eq(true, capture.sync_sess_a_alive)
+    h.eq(true, capture.sync_win_a_valid)
+    h.eq(true, capture.async_focused)
+    h.eq(true, capture.final_focus_equals_a)
+  end)
+
   -- Regression for "external focus events (mouse click, :new) should
   -- switch the kak window": after :KakNewWin the new split must be the
   -- current session/focused window, WinEnter must track window
