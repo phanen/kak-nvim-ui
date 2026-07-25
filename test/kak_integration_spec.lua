@@ -441,4 +441,48 @@ describe('info popup positioning', function()
     -- prompt-style menu should be at the bottom: row near editor_h - height.
     assert(pos.row >= 40, 'expected prompt menu near bottom, got row=' .. tostring(pos.row))
   end)
+
+  it('prompt info (help popup) is anchored to the bottom-right corner', function()
+    local pos = exec_lua(function()
+      local renderer = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      renderer:set_buf(vim.api.nvim_create_buf(false, true))
+      renderer:set_mode_buf(vim.api.nvim_create_buf(false, true))
+      local popups = require('kak.ui.popups').new({ faces = renderer.faces, renderer = renderer })
+      vim.o.columns = 160
+      vim.o.lines = 50
+      local title = {
+        {
+          face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
+          contents = 'Help',
+        },
+      }
+      local content = {
+        {
+          {
+            face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
+            contents = 'documentation body',
+          },
+        },
+      }
+      popups:info_show(
+        title,
+        content,
+        { line = 5, column = 0 },
+        { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
+        'prompt'
+      )
+      local config = vim.api.nvim_win_get_config(popups.info_state.win)
+      popups:info_hide()
+      return { row = config.row, col = config.col, anchor = config.anchor, width = config.width }
+    end)
+    -- With SE anchor, nvim positions the bottom-right corner of the
+    -- float at (row, col). The float must align with the editor's
+    -- right edge and bottom row.
+    assert(pos.anchor == 'SE', 'expected SE anchor, got ' .. tostring(pos.anchor))
+    assert(pos.row == 50, 'expected bottom row (50), got ' .. tostring(pos.row))
+    assert(
+      pos.col == 160,
+      'expected right edge aligned with editor (col=160), got col=' .. tostring(pos.col)
+    )
+  end)
 end)

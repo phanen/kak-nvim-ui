@@ -2,12 +2,8 @@
 --- Maps a Kakoune Face (fg / bg / underline / attributes) onto a nvim
 --- highlight group registered via `nvim_set_hl`.
 ---
---- Kakoune attributes:
----   underline, curly_underline, double_underline, reverse, blink,
----   bold, dim, italic, final_fg, final_bg, final_attr, strikethrough.
---- `final_*` and `blink`/`dim` have no nvim analog and are ignored with
---- a debug log. `underline` color maps to nvim `sp` (special underline
---- color). Reverse maps to `reverse`.
+--- `underline` color maps to nvim `sp`. `final_*` / `blink` / `dim`
+--- have no nvim analog and are dropped.
 
 local M = {}
 
@@ -80,6 +76,15 @@ local function attrs_to_bits(attrs)
   return bits
 end
 
+-- FNV-1a-ish hash for short stable suffix.
+local function fnv1a(key)
+  local h = 2166136261
+  for i = 1, #key do
+    h = bit.band(bit.bxor(h, string.byte(key, i)) * 16777619, 0xffffffff)
+  end
+  return h
+end
+
 local function face_to_val(face, opts)
   opts = opts or {}
   local val = {}
@@ -129,20 +134,18 @@ local function face_to_key(face)
   return table.concat({ fg, bg, ul, attr_str }, '|')
 end
 
---- Cache state. Maps canonical face key -> highlight group name.
 --- @class kak.ui.faces.Cache
 local Cache = {}
 Cache.__index = Cache
 
 function M.new(opts)
   opts = opts or {}
-  local self = setmetatable({
+  return setmetatable({
     cap = opts.cap or 512,
     by_key = {},
     lru = {},
     counter = 0,
   }, Cache)
-  return self
 end
 
 --- Return highlight group name for a Face. Registers the group via
@@ -156,19 +159,8 @@ function Cache:get(face)
     return entry.name
   end
   self.counter = self.counter + 1
-  local name
-  if not face then
-    name = 'KakDefault'
-  else
-    -- FNV-1a-ish hash for short stable suffix.
-    local h = 2166136261
-    for i = 1, #key do
-      h = bit.band(bit.bxor(h, string.byte(key, i)) * 16777619, 0xffffffff)
-    end
-    name = string.format('KakFace_%08x', h)
-  end
-  local val = face_to_val(face, { default = (face == nil) })
-  pcall(vim.api.nvim_set_hl, HL_NS, name, val)
+  local name = face and string.format('KakFace_%08x', fnv1a(key)) or 'KakDefault'
+  pcall(vim.api.nvim_set_hl, HL_NS, name, face_to_val(face, { default = (face == nil) }))
   entry = { name = name, key = key, tick = (self.lru.tick or 0) + 1 }
   self.by_key[key] = entry
   self.lru.tick = entry.tick
@@ -187,30 +179,7 @@ function Cache:_evict()
   if victim_key then self.by_key[victim_key] = nil end
 end
 
-function Cache:reset()
-  self.by_key = {}
-  self.lru = {}
-  self.counter = 0
-end
-
 function Cache:size() return vim.tbl_count(self.by_key) end
-
---- Apply a Face to a nvim buffer extmark span described by `start`/`end`
---- byte positions on `line`. Wraps `nvim_buf_set_extmark`.
-function Cache:apply_extmark(buf, ns, line, start_col, end_col, face, extra)
-  local hl = self:get(face)
-  local opts = {
-    hl_group = hl,
-    end_col = end_col,
-    right_gravity = false,
-  }
-  if extra then
-    for k, v in pairs(extra) do
-      opts[k] = v
-    end
-  end
-  return vim.api.nvim_buf_set_extmark(buf, ns, line, start_col, opts)
-end
 
 M.face_to_key = face_to_key
 M.face_to_val = face_to_val

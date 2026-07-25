@@ -4,12 +4,8 @@
 --- Layout:
 ---   * `content_buf` -- the main buffer. Holds the display_lines that
 ---     Kakoune draws. Cursor is placed here.
----   * `mode_buf`   -- a one-line scratch buffer mounted as the nvim
----     statusline (see init.lua). Holds the mode line from
----     `draw_status`.
----   * Prompt input -- a one-line scratch buffer shown as a floating
----     window at the bottom of the screen when Kakoune reports a
----     prompt (style != 'status').
+---   * `mode_buf`    -- one-line scratch buffer for the statusline mode
+---     line from `draw_status`.
 
 local M = {}
 
@@ -19,6 +15,8 @@ local CURSOR_NS = NS + 2
 local MODE_NS = NS + 3
 
 --- Convert a codepoint column to a byte offset within `line`.
+--- @param line string
+--- @param column integer 1-based codepoint column; 0 clamps to byte 0
 local function column_to_byte(line, column)
   if column <= 0 then return 0 end
   local byte = 0
@@ -81,8 +79,7 @@ local function compose_one_line(line)
   for _, atom in ipairs(line) do
     parts[#parts + 1] = atom.contents or ''
   end
-  local s = table.concat(parts)
-  return (s:gsub('\n+$', ''))
+  return (table.concat(parts):gsub('\n+$', ''))
 end
 
 --- Compose `lines` (array of atom arrays) into a flat text array,
@@ -115,7 +112,7 @@ end
 function Renderer:set_buf(buf)
   self.content_buf = buf
   self.set_lines_cache = {}
-  pcall(vim.api.nvim_set_option_value, 'modifiable', false, { buf = buf })
+  vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 end
 
 function Renderer:set_mode_buf(buf) self.mode_buf = buf end
@@ -130,7 +127,7 @@ function Renderer:draw(lines, cursor_pos, default_face, padding_face)
   vim.api.nvim_buf_clear_namespace(buf, CURSOR_NS, 0, -1)
 
   local text = compose_text(lines)
-  pcall(vim.api.nvim_set_option_value, 'modifiable', true, { buf = buf })
+  vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
   local prev = self.set_lines_cache
   local same = #prev == #text
   if same then
@@ -145,9 +142,8 @@ function Renderer:draw(lines, cursor_pos, default_face, padding_face)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, text)
     self.set_lines_cache = text
   end
-  pcall(vim.api.nvim_set_option_value, 'modifiable', false, { buf = buf })
+  vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 
-  -- Per-atom highlights.
   if default_face then
     for i, line in ipairs(lines or {}) do
       local byte = 0
@@ -174,7 +170,6 @@ function Renderer:draw(lines, cursor_pos, default_face, padding_face)
   end
 end
 
---- Place the cursor highlight + move nvim cursor.
 function Renderer:_place_cursor(buf, coord, face_for_default)
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(coord.line, total - 1))
@@ -198,20 +193,18 @@ function Renderer:_place_cursor(buf, coord, face_for_default)
   if win and win > 0 then pcall(vim.api.nvim_win_set_cursor, win, { row + 1, col }) end
 end
 
---- Clear any cursor highlight without moving the cursor.
 function Renderer:hide_cursor(buf)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
-  pcall(vim.api.nvim_buf_clear_namespace, buf, CURSOR_NS, 0, -1)
+  vim.api.nvim_buf_clear_namespace(buf, CURSOR_NS, 0, -1)
 end
 
---- Render the mode line into the dedicated scratch buffer.
 function Renderer:draw_mode(mode_line, default_face)
   local buf = self.mode_buf
   if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
   local text = compose_one_line(mode_line or {})
-  pcall(vim.api.nvim_set_option_value, 'modifiable', true, { buf = buf })
+  vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { text })
-  pcall(vim.api.nvim_set_option_value, 'modifiable', false, { buf = buf })
+  vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
   vim.api.nvim_buf_clear_namespace(buf, MODE_NS, 0, -1)
   local byte = 0
   for _, atom in ipairs(mode_line or {}) do
@@ -231,7 +224,6 @@ function Renderer:draw_mode(mode_line, default_face)
   end
 end
 
---- Store prompt info for the caller to display as a floating window.
 function Renderer:set_prompt(prompt_line, content_line, cursor_col, default_face, style)
   local s = self.prompt_state
   s.prompt = prompt_line

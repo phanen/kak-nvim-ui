@@ -10,18 +10,6 @@
 local M = {}
 
 local INLINE_MAX_ITEMS = 12
-local INLINE_MAX_LINE_LEN = 240
-
-local function total_byte_length(items)
-  local n = 0
-  for _, item in ipairs(items) do
-    for _, atom in ipairs(item) do
-      n = n + #(atom.contents or '')
-    end
-    n = n + 1
-  end
-  return n
-end
 
 local function line_to_text(line)
   local parts = {}
@@ -30,8 +18,6 @@ local function line_to_text(line)
   end
   return table.concat(parts)
 end
-
-local function all_items_byte_length(items) return total_byte_length(items) end
 
 --- @class kak.ui.popups.Manager
 local Manager = {}
@@ -47,12 +33,6 @@ function M.new(opts)
   }, Manager)
 end
 
-local function buffer_text(buf) return vim.api.nvim_buf_get_lines(buf, 0, -1, false) end
-
--- Track last anchor for inline menu re-renders on select.
-local function anchor_column_get(self) return self.menu_state._anchor_col or 0 end
-
---- Show menu. Returns the mode actually used (inline vs float).
 function Manager:_show_menu(items, anchor, fg, bg, style)
   self:menu_hide()
 
@@ -82,19 +62,14 @@ function Manager:_show_menu_float(items, anchor, fg, bg, style)
   end
   local win_h = math.min(#lines, 20)
 
-  -- Per-style placement mirroring kakoune's terminal UI:
-  --   * prompt -> sits at the prompt row (bottom), full width aligned
-  --   * search -> just below the matched row (anchor + 1)
-  --   * inline -> never floats (handled by _show_menu_inline)
+  -- `prompt` sits at the bottom of the editor (completion menu); everything
+  -- else floats just below the matched row.
   local win_anchor, row, col
   if style == 'prompt' then
-    -- Anchor bottom of menu at the bottom of the editor. The float
-    -- grows upward automatically thanks to the SW anchor.
     win_anchor = 'SW'
     row = editor_h
     col = math.max(0, math.floor(editor_w / 2))
   else
-    -- search / inline -> NW anchor just below the matched line.
     win_anchor = 'NW'
     local total = vim.api.nvim_buf_line_count(self.renderer.content_buf)
     local base = math.max(0, math.min(anchor.line, total - 1))
@@ -143,10 +118,10 @@ function Manager:_show_menu_inline(items, anchor, fg, bg, style)
     items = items,
     fg = fg,
     bg = bg,
+    anchor = anchor,
     selected = -1,
     style = style,
   }
-  -- Apply virt_text at the cursor position.
   local buf = self.renderer.content_buf
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(anchor.line, total - 1))
@@ -172,7 +147,6 @@ function Manager:menu_select(selected)
   if not self.menu_state then return end
   self.menu_state.selected = selected
   if self.menu_state.kind == 'float' then
-    -- Update highlight overlay on selected line.
     local buf = self.menu_state.buf
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
     for i, item in ipairs(self.menu_state.items) do
@@ -187,30 +161,22 @@ function Manager:menu_select(selected)
       )
     end
   else
-    -- Inline: re-apply virt_text with selected highlight.
     local buf = self.renderer.content_buf
+    local total = vim.api.nvim_buf_line_count(buf)
+    local anchor = self.menu_state.anchor or { line = 0, column = 0 }
+    local row = math.max(0, math.min(anchor.line, total - 1))
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
     for i, item in ipairs(self.menu_state.items) do
       local line = line_to_text(item)
-      local hl
-      if i == selected + 1 then
-        hl = self.faces:get(self.menu_state.fg)
-      else
-        hl = self.faces:get(self.menu_state.bg)
-      end
-      vim.api.nvim_buf_set_extmark(
-        buf,
-        self.float_ns,
-        selected ~= -1 and self.menu_state._anchor_row or 0,
-        anchor_column_get(self),
-        {
-          virt_text = { { line, hl } },
-          virt_text_pos = 'eol',
-          hl_mode = 'combine',
-          right_gravity = false,
-          id = 1000 + i,
-        }
-      )
+      local hl = (i == selected + 1) and self.faces:get(self.menu_state.fg)
+        or self.faces:get(self.menu_state.bg)
+      vim.api.nvim_buf_set_extmark(buf, self.float_ns, row, anchor.column or 0, {
+        virt_text = { { line, hl } },
+        virt_text_pos = 'eol',
+        hl_mode = 'combine',
+        right_gravity = false,
+        id = 1000 + i,
+      })
     end
   end
 end
@@ -233,8 +199,6 @@ function Manager:menu_hide()
   end
   self.menu_state = nil
 end
--- Track last anchor for inline menu re-renders on select.
--- (moved earlier)
 
 function Manager:info_show(title, content, anchor, face, style)
   self:info_hide()
@@ -268,18 +232,12 @@ function Manager:_info_float(title, content, anchor, face, style)
   local width = math.min(maxw + 2, math.max(20, math.floor(editor_w / 2)))
   local height = math.min(#lines, math.max(5, math.floor(editor_h / 3)))
 
-  -- Use nvim_open_win's `anchor` corner semantics instead of manual
-  -- subtract-from-screen math. See |nvim_open_win()| anchor key.
   local win_anchor, row, col
   if style == 'modal' then
-    -- Centered on screen. Default NW anchor, position the top-left at
-    -- the natural center.
     win_anchor = 'NW'
     row = math.max(0, math.floor((editor_h - height) / 2) - 1)
     col = math.max(0, math.floor((editor_w - width) / 2))
   elseif style == 'menuDoc' then
-    -- Which-key-style doc: anchor top-right corner at the right side
-    -- of the editor, just below the menu row.
     local total = (self.renderer and self.renderer.content_buf)
         and vim.api.nvim_buf_line_count(self.renderer.content_buf)
       or editor_h
@@ -289,11 +247,12 @@ function Manager:_info_float(title, content, anchor, face, style)
     row = math.min(base + 1, editor_h - height - 2)
     col = editor_w
   else
-    -- 'prompt' style (and any unknown float style): anchor bottom of
-    -- float to the bottom of the editor.
-    win_anchor = 'SW'
+    -- `prompt` style (help popup): strict bottom-right corner of editor,
+    -- mirroring kakoune's terminal UI which aligns the info box's right
+    -- edge with the rightmost column.
+    win_anchor = 'SE'
     row = editor_h
-    col = math.max(0, math.floor(editor_w / 2))
+    col = editor_w
   end
 
   local hl = self.faces:get(face)

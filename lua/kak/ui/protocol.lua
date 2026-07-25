@@ -1,30 +1,15 @@
 ---
 --- Parses and dispatches Kakoune JSON-UI messages. Wire format matches
---- Kakoune 2026.05.21 (master) per doc/json_ui.asciidoc.
+--- Kakoune master per doc/json_ui.asciidoc.
 ---
---- Inbound (Kakoune -> UI):
----   draw(lines, cursor_pos, default_face, padding_face, widget_columns)
----   draw_status(prompt, content, cursor_pos, mode_line, default_face, style)
----   menu_show(items, anchor, fg, bg, style)
----   menu_select(selected)
----   menu_hide()
----   info_show(title, content, anchor, face, style)
----   info_hide()
----   refresh(force)
----   set_ui_options(options)
----
---- Outbound (UI -> Kakoune):
----   keys, paste, mouse_move, mouse_press, mouse_release, scroll,
----   menu_select, resize.
----
---- One JSON object per `\n` terminated chunk. Params are positional arrays.
+--- One JSON object per `\n`-terminated chunk. Params are positional arrays.
 
 local M = {}
 
 local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NIL' end })
 
--- Tolerate both Lua `nil` and `vim.NIL` (which is what `vim.json.decode`
--- returns for a JSON `null`). Both mean "absent" on the wire.
+-- Tolerate Lua `nil` and `vim.NIL` (what `vim.json.decode` returns for
+-- JSON `null`); both mean "absent" on the wire.
 local function absent(v) return v == nil or v == NIL end
 
 local function expect_array(name, params, min)
@@ -60,17 +45,6 @@ local function parse_face(method, face, idx)
 end
 
 local function parse_coord(method, coord, idx)
-  if absent(coord) or type(coord) ~= 'table' then
-    error(method .. ': coord @' .. tostring(idx) .. ' missing', 3)
-  end
-  if type(coord.line) ~= 'number' or type(coord.column) ~= 'number' then
-    error(method .. ': coord @' .. tostring(idx) .. ' missing line/column', 3)
-  end
-  return coord
-end
-
--- Looser coord: `column` may be 0 (cursor hidden) or negative.
-local function parse_coord_loose(method, coord, idx)
   if absent(coord) or type(coord) ~= 'table' then
     error(method .. ': coord @' .. tostring(idx) .. ' missing', 3)
   end
@@ -121,7 +95,7 @@ HANDLERS.draw = function(params)
   expect_array('draw', params, 5)
   return {
     lines = parse_lines('draw', params[1], 1),
-    cursor_pos = parse_coord_loose('draw', params[2], 2),
+    cursor_pos = parse_coord('draw', params[2], 2),
     default_face = parse_face('draw', params[3], 3),
     padding_face = parse_face('draw', params[4], 4),
     widget_columns = params[5],
@@ -130,22 +104,18 @@ end
 
 HANDLERS.draw_status = function(params)
   expect_array('draw_status', params, 6)
-  local style = params[6]
-  if absent(style) then style = 'status' end
-  local valid = { command = true, search = true, prompt = true, status = true }
-  -- draw_status's 3rd param is a ColumnCount (integer), not a Coord.
-  -- Negative values mean "no cursor".
   local cursor = params[3]
   if absent(cursor) or type(cursor) ~= 'number' then
     error('draw_status: cursor_pos @3 must be integer', 3)
   end
+  local valid = { command = true, search = true, prompt = true, status = true }
   return {
     prompt = parse_line('draw_status', params[1], 1),
     content = parse_line('draw_status', params[2], 2),
     cursor_pos = cursor,
     mode_line = parse_line('draw_status', params[4], 4),
     default_face = parse_face('draw_status', params[5], 5),
-    style = check_enum('draw_status', style, valid, 6),
+    style = check_enum('draw_status', params[6] or 'status', valid, 6),
   }
 end
 
