@@ -433,6 +433,26 @@ function M.open(opts)
   sess.augroup = augroup
 
   M.set_current(sess)
+  -- Defensive: after `:KakNewWin` opens a new session, every OTHER
+  -- live session's window may have just been resized (the
+  -- `vim.cmd('vsplit')` inside `:KakNewWin`). Their per-buffer
+  -- `WinResized` autocmd should already have fired report_resize
+  -- for them, but that's timing-sensitive: it runs from the
+  -- `vim.cmd('vsplit')` event loop and can race with the new
+  -- session's `vim.defer_fn(50)` (which sees the new session's
+  -- window, not the existing one). Belt-and-suspenders: explicitly
+  -- re-run report_resize on every OTHER live session right after
+  -- the new session is registered, reading CURRENT dims from each
+  -- window. Covers the case where a session's autocmd fired with
+  -- stale dims (split not fully settled yet), and ensures the
+  -- user sees the correct full-height rendering on BOTH sides of
+  -- the split instead of half-height (the original `:new`
+  -- symptom).
+  for _, other in pairs(SESSIONS) do
+    if other ~= sess and not other.closed and other.input then
+      pcall(function() other.input:report_resize() end)
+    end
+  end
   return sess
 end
 

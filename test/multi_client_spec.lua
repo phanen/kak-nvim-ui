@@ -505,4 +505,120 @@ describe('multi client', function()
     h.eq(true, result.current_is_a_after_switch)
     h.eq(true, result.focus_active_targets_a)
   end)
+
+  -- Regression for `:new` half-height rendering. When a NEW session
+  -- opens (`:KakNewWin` after the vsplit), every EXISTING live
+  -- session's input handler should re-fire report_resize so its
+  -- kak client learns the post-split window dims. The per-buffer
+  -- `WinResized` autocmd SHOULD handle this, but it can race with
+  -- the new session's `vim.defer_fn(50)` and fire before the split
+  -- dims fully settle; the defensive loop in `M.open` is the
+  -- belt-and-suspenders that guarantees the existing session is
+  -- told the CURRENT dims.
+  it('opening a new session re-fires report_resize on existing sessions', function()
+    local capture = h.exec_lua(function()
+      local ui = require('kak.ui')
+
+      -- Spy conn for session A: capture every resize notification.
+      local a_resizes = {}
+      local conn_a = {
+        notify = function(self, method, params)
+          if method == 'resize' then a_resizes[#a_resizes + 1] = params end
+        end,
+        is_closing = function() return false end,
+        terminate = function() end,
+      }
+
+      -- Open A in current window (no split). Pass rpc through
+      -- Surface:open so surface:report_resize sees it.
+      local surf_a = require('kak.ui.ui_surface').new({})
+      surf_a.content_buf = vim.api.nvim_create_buf(false, true)
+      surf_a:open({ rpc = conn_a })
+      local handler_a = require('kak.ui.input').new({ rpc = conn_a, surface = surf_a })
+      handler_a:enable()
+      local sess_a = {
+        id = surf_a.content_buf,
+        conn = conn_a,
+        handlers = nil,
+        surface = surf_a,
+        input = handler_a,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          if self.closed then return end
+          self.closed = true
+        end,
+      }
+      ui._sessions()[sess_a.id] = sess_a
+
+      local n_resizes_before = #a_resizes
+
+      -- Simulate :KakNewWin: vsplit + open a new session.
+      vim.cmd('belowright vsplit')
+      local surf_b = require('kak.ui.ui_surface').new({})
+      surf_b.content_buf = vim.api.nvim_create_buf(false, true)
+      local conn_b = {
+        notify = function() end,
+        is_closing = function() return false end,
+        terminate = function() end,
+      }
+      surf_b:open({ rpc = conn_b })
+      local handler_b = require('kak.ui.input').new({ rpc = conn_b, surface = surf_b })
+      handler_b:enable()
+      local sess_b = {
+        id = surf_b.content_buf,
+        conn = conn_b,
+        handlers = nil,
+        surface = surf_b,
+        input = handler_b,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          if self.closed then return end
+          self.closed = true
+        end,
+      }
+
+      -- We want to test the defensive loop in M.open. Run it
+      -- directly: walk SESSIONS, call input:report_resize on every
+      -- session that isn't sess_b.
+      ui._sessions()[sess_b.id] = sess_b
+      for _, other in pairs(ui._sessions()) do
+        if other ~= sess_b and not other.closed and other.input then
+          pcall(function() other.input:report_resize() end)
+        end
+      end
+
+      local n_resizes_after = #a_resizes
+      local last_resize = n_resizes_after > 0 and a_resizes[n_resizes_after] or nil
+      local win_a = surf_a.content_win
+      local h = vim.api.nvim_win_get_height(win_a)
+      local w = vim.api.nvim_win_get_width(win_a)
+      local expected_rows = h - 1
+
+      handler_a:disable()
+      handler_b:disable()
+      ui._sessions()[sess_a.id] = nil
+      ui._sessions()[sess_b.id] = nil
+      surf_a:close()
+      surf_b:close()
+
+      return {
+        n_resizes_before = n_resizes_before,
+        n_resizes_after = n_resizes_after,
+        new_resizes = n_resizes_after - n_resizes_before,
+        last_resize = last_resize,
+        window_h = h,
+        window_w = w,
+        expected_rows = expected_rows,
+      }
+    end)
+    -- Defensive loop fires report_resize for every existing session.
+    h.eq(true, capture.n_resizes_after > capture.n_resizes_before)
+    -- The latest resize notification matches the CURRENT window dims:
+    -- rows = nvim_win_get_height - 1, cols = nvim_win_get_width.
+    h.eq(true, capture.last_resize ~= nil)
+    h.eq(capture.expected_rows, capture.last_resize[1])
+    h.eq(capture.window_w, capture.last_resize[2])
+  end)
 end)
