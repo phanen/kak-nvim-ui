@@ -43,6 +43,48 @@ describe('real Kakoune integration', function()
     end
   end)
 
+  describe('with screen attached', function()
+    -- A separate describe so only this case pays the Screen attach cost.
+    local screen
+
+    before_each(function()
+      screen = h.with_screen(80, 24)
+    end)
+    after_each(function()
+      if screen then
+        screen:detach()
+        screen = nil
+      end
+    end)
+
+    it('renders grid via screen:expect', function()
+      local file = h.write_file({ 'alpha line', 'beta line', 'gamma line' })
+
+      h.with_kak_session({
+        extra_args = { '-e', 'edit ' .. file },
+      }, function(sess, f)
+        vim.wait(3000, function()
+          local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
+          return #lines >= 3 and lines[1] == 'alpha line'
+        end)
+      end, file)
+
+      os.remove(file)
+
+      -- 80x24: 1 mode + 3 content + 19 empty + 1 cmdline.
+      -- Cursor `^` glyph sits at column 0 of the focused row, so the
+      -- alpha row actually begins with `^`, not the alpha text.
+      screen:expect([[
+        {MATCH:^.*k//main.*X}|
+        {MATCH:alpha line}
+        {MATCH:beta line}
+        {MATCH:gamma line}
+        {MATCH:^~.*}|*19
+        {MATCH:^ *}|
+      ]])
+    end)
+  end)
+
   it('updates buffer when file changes mid-session', function()
     local file = h.write_file({ 'initial content' })
 
