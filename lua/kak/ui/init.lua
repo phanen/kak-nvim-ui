@@ -2,13 +2,20 @@
 --- The Kakoune JSON-UI plugin entry point.
 ---
 --- Spawns `kak -ui json [...]` as a child process, opens an NDJSON
---- JSON-RPC connection over stdio, claims one nvim tab + window for
+--- JSON-RPC connection over stdio, claims the current nvim window for
 --- the render area, and wires Kakoune notifications to render / input
 --- / popup handlers.
 ---
---- Layout: see `lua/kak/ui/ui_surface.lua` for the tab/window
---- lifecycle and `lua/kak/ui/handlers.lua` for the notification
---- dispatcher.
+--- Layout: see `lua/kak/ui/ui_surface.lua` for the window lifecycle
+--- and `lua/kak/ui/handlers.lua` for the notification dispatcher.
+---
+--- Multi-client model: each open() call spawns a fresh
+--- `kak -ui json` process and a fresh Connection; sessions live in a
+--- `SESSIONS` table keyed by their content buffer number. The
+--- `current_session` slot tracks the most-recently-focused client and
+--- gates statusbar cursor-move + autocmd-installed WinEnter focus
+--- routing. Closing one session via `:q` terminates only that
+--- session's child process; sibling clients are unaffected.
 
 local json_rpc = require('kak.ui.json_rpc')
 local surface_mod = require('kak.ui.ui_surface')
@@ -18,26 +25,58 @@ local log = require('kak.ui.log').log
 
 ---@alias kak.ui.OpenOpts { session?: string, cmd?: string[], extra_args?: string[], cwd?: string, env?: table<string, string> }
 
---- A Session owns the rpc + input bindings + close; everything else
---- (renderer, faces, popups, surface, handlers dispatch) lives on the
---- `kak.ui.Handlers` module and is reached via `__index` so this
---- class does not have to enumerate the actor's fields.
+--- A Session owns the rpc + input bindings + close for one kak
+--- client. Everything else (renderer, faces, popups, surface, handler
+--- dispatch) lives on the per-session `kak.ui.Handlers` instance.
 ---@class kak.ui.Session
+---@field id integer content buffer number
 ---@field conn kak.ui.json_rpc.Connection
----@field buf integer
+---@field handlers kak.ui.Handlers
+---@field surface kak.ui.surface.Surface
 ---@field input kak.ui.input.Handler
+---@field augroup integer nvim augroup id
+---@field closed boolean
 ---@field close fun(self: kak.ui.Session)
----@field __index kak.ui.Handlers
 
 local M = {}
 
+--- Registered sessions, keyed by content buffer number.
+---@type table<integer, kak.ui.Session>
+local SESSIONS = {}
+
+--- The most recently focused session; updates from the WinEnter
+--- autocmd installed in `open()` and from `:KakNewWin`.
 ---@type kak.ui.Session?
-local ACTIVE = nil
+local current_session = nil
+
+--- Locate the session that owns the content buffer `buf`, if any.
+---@param buf integer
+---@return kak.ui.Session?
+function M.session_for_buf(buf)
+  local session = SESSIONS[buf]
+  if session and not session.closed then return session end
+  return nil
+end
+
+---@return kak.ui.Session?
+function M.current() return current_session end
+
+--- Install `sess` as the current session. Safe to call from any
+--- focus event; the registry is private so direct writes must go
+--- through here. `nil` clears the slot (used by tests).
+---@param sess kak.ui.Session?
+function M.set_current(sess) current_session = sess end
+
+--- Iterate every live session. Internal: only used by VimLeavePre.
+---@return fun(): integer?, kak.ui.Session
+function M._iter()
+  local it = pairs(SESSIONS) --[[@as fun(): integer?, kak.ui.Session]]
+  return it
+end
 
 ---@param opts kak.ui.OpenOpts?
 ---@return kak.ui.Session
 function M.open(opts)
-  if ACTIVE then return ACTIVE end
   opts = require('kak.ui.windowing').inject_args(opts)
   local cmd = opts.cmd or { 'kak' }
   local session = opts.session
@@ -59,21 +98,34 @@ function M.open(opts)
   local ui_options = {}
   ---@type kak.ui.HandlerContext
   local ctx = { ui_options = ui_options, last_force = false }
-  local sess
 
-  -- Surface claims the nvim tab + window and creates the scratch
+  -- Surface claims the current nvim window and creates the scratch
   -- buffers before we spawn the child process, so handlers can attach
   -- the renderer to buffers that already have a home.
   local surface = surface_mod.new({ session = session })
   surface:open({ session = session })
+  local content_bufnr = assert(surface.content_buf, 'Surface:open did not produce a content_buf')
 
-  handlers.setup({ ctx = ctx, ui_options = ui_options, surface = surface })
+  local h = handlers.new({
+    ctx = ctx,
+    ui_options = ui_options,
+    surface = surface,
+  })
+  -- Back-reference so statusbar / close hooks can find the owning
+  -- session without traversing a registry from inside the call chain.
+  h.session = nil -- assigned after `sess` exists, see below
+
+  local sess
+  local function close_session()
+    if not sess then return end
+    sess:close()
+  end
 
   local dispatchers = {
     on_notify = function(method, params)
-      local fn = handlers[method]
+      local fn = h[method]
       if fn then
-        local ok, err = pcall(function() fn(handlers, params or {}) end)
+        local ok, err = pcall(function() fn(h, params or {}) end)
         if not ok then log.warn('handler', method, 'error:', tostring(err)) end
       end
     end,
@@ -83,7 +135,6 @@ function M.open(opts)
       return nil, { code = -32601, message = 'method not found: ' .. method }
     end,
     on_exit = function(code, signal)
-      if ACTIVE == sess then ACTIVE = nil end
       vim.schedule(
         function()
           vim.notify(
@@ -92,6 +143,7 @@ function M.open(opts)
           )
         end
       )
+      close_session()
     end,
     on_error = function(code, err) log.warn('rpc error', code, vim.inspect(err)) end,
   }
@@ -102,52 +154,108 @@ function M.open(opts)
     cwd = opts.cwd,
     env = opts.env,
   })
-  surface.rpc = conn
 
-  local buf = handlers:ensure_buf()
   local input_handler = input.new({ rpc = conn, surface = surface })
-  input_handler:enable(buf)
+  input_handler:enable()
+  h.session = nil -- final assignment below
 
   vim.defer_fn(function()
     if not conn:is_closing() then input_handler:report_resize() end
   end, 50)
 
-  local augroup = vim.api.nvim_create_augroup('KakUi' .. tostring(buf), { clear = true })
+  ---@type kak.ui.Session
+  sess = {
+    id = content_bufnr,
+    conn = conn,
+    handlers = h,
+    surface = surface,
+    input = input_handler,
+    augroup = 0,
+    closed = false,
+    close = function(self)
+      if self.closed then return end
+      self.closed = true
+      if self.conn and not self.conn:is_closing() then self.conn:terminate() end
+      if self.surface then
+        self.surface.rpc = nil
+        self.surface:close()
+      end
+      if self.input then self.input:disable() end
+      pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
+      SESSIONS[self.id] = nil
+      if current_session == self then current_session = nil end
+    end,
+  }
+  -- Now that `sess` exists, hook the handlers back to it so
+  -- statusbar / input can find the session context.
+  h.session = sess
+
+  SESSIONS[content_bufnr] = sess
+
+  -- Per-session autocmds: keep the registration scoped to the
+  -- augroup so disabling/closing one session doesn't disturb others.
+  local augroup =
+    vim.api.nvim_create_augroup('KakUiSession' .. tostring(content_bufnr), { clear = true })
+  sess.augroup = augroup
+
   vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized' }, {
     group = augroup,
-    buffer = buf,
+    buffer = content_bufnr,
     callback = function() input_handler:report_resize() end,
   })
-  vim.api.nvim_create_autocmd('VimLeavePre', {
+  vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
     group = augroup,
-    callback = function() conn:terminate() end,
+    buffer = content_bufnr,
+    callback = function() sess:close() end,
+  })
+  vim.api.nvim_create_autocmd('WinClosed', {
+    group = augroup,
+    pattern = tostring(surface.content_win),
+    callback = function() sess:close() end,
+  })
+  vim.api.nvim_create_autocmd('WinEnter', {
+    group = augroup,
+    buffer = content_bufnr,
+    callback = function() M.set_current(sess) end,
   })
 
-  ---@type kak.ui.Session
-  -- `handlers` is the dispatch surface (module-as-actor). Fall
-  -- through to it via __index so this table doesn't have to enumerate
-  -- its fields -- adding a new field on `Handlers` makes it reachable
-  -- here without touching this file.
-  sess = setmetatable({
-    conn = conn,
-    buf = buf,
-    input = input_handler,
-    close = function()
-      conn:terminate()
-      if handlers.surface then handlers.surface:close() end
-      if ACTIVE == sess then ACTIVE = nil end
-    end,
-  }, { __index = handlers })
-  ACTIVE = sess
+  M.set_current(sess)
   return sess
 end
 
-function M.close()
-  if not ACTIVE then return end
-  ACTIVE:close()
+--- Close the given session (by `buf`/`Session` arg) or the current
+--- session if no arg supplied.
+---@param buf_or_sess? integer|kak.ui.Session
+function M.close(buf_or_sess)
+  if not buf_or_sess then
+    if not current_session then return end
+    current_session:close()
+    return
+  end
+  if type(buf_or_sess) == 'table' then
+    ---@cast buf_or_sess kak.ui.Session
+    buf_or_sess:close()
+    return
+  end
+  ---@cast buf_or_sess integer
+  local s = SESSIONS[buf_or_sess]
+  if s then s:close() end
 end
 
+-- Iterate every live session on shutdown so the kak-child processes
+-- get a chance to terminate cleanly. VimLeavePre fires in reverse
+-- insertion order, but iteration is independent of order here.
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  group = vim.api.nvim_create_augroup('KakUiShutdown', { clear = true }),
+  callback = function()
+    for _, s in pairs(SESSIONS) do
+      if s.conn then s.conn:terminate() end
+    end
+  end,
+})
+
+--- Back-compat alias for older tests that used `M.active()`.
 ---@return kak.ui.Session?
-function M.active() return ACTIVE end
+function M.active() return current_session end
 
 return M

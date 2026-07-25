@@ -16,6 +16,8 @@ vim.api.nvim_create_user_command('Kak', function(opts)
       args[#args + 1] = arg
     end
   end
+  -- First call claims the current nvim window. Later sessions may
+  -- be opened via `:KakNewWin` / `:KakNewTab`.
   require('kak.ui').open({
     session = session,
     extra_args = args,
@@ -33,11 +35,19 @@ end, {
   end,
 })
 
-vim.api.nvim_create_user_command(
-  'KakClose',
-  function() require('kak.ui').close() end,
-  { desc = 'Close the active Kakoune UI session.' }
-)
+vim.api.nvim_create_user_command('KakClose', function(opts)
+  -- Allow an optional buffer number: close that session if known.
+  local arg = opts.fargs[1]
+  if arg and arg ~= '' then
+    local buf = tonumber(arg)
+    if buf then
+      ---@cast buf integer
+      require('kak.ui').close(buf)
+      return
+    end
+  end
+  require('kak.ui').close()
+end, { nargs = '?', desc = 'Close the active Kakoune UI session.' })
 
 -- Bridge for the `nvim` kak windowing module. When Kakoune calls
 -- `:new` / `:tabnew` / `focus`, the bundled `kak/nvim.kak` shells
@@ -48,6 +58,10 @@ vim.api.nvim_create_user_command(
 vim.api.nvim_create_user_command('KakNewWin', function(opts)
   local placement = opts.fargs[1]
   local session = opts.fargs[2]
+  -- The split direction is intentionally naive for now (phase 2 will
+  -- revisit). Today every placement opens a horizontal `belowright
+  -- split` so the user gets a fresh window focused underneath the
+  -- current one.
   local split_cmd
   if placement == 'vertical' then
     split_cmd = 'vsplit'

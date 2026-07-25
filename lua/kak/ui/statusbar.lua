@@ -139,6 +139,7 @@ end
 ---@param default_face kak.ui.faces.Face?
 ---@param _style kak.ui.protocol.DrawStyle
 ---@param cache kak.ui.faces.Cache
+---@param session? kak.ui.Session
 function M.render(
   surface,
   renderer,
@@ -148,7 +149,8 @@ function M.render(
   mode_line,
   default_face,
   _style,
-  cache
+  cache,
+  session
 )
   if not surface then return end
   surface:ensure_status_float()
@@ -176,18 +178,23 @@ function M.render(
     end
   end
 
-  -- Real nvim cursor (ui2-style): in prompt/command/search mode move it
-  -- into the status float at the prompt-cursor cell; in status mode leave
-  -- it in the content buffer at the last draw cursor. `render._place_cursor`
-  -- skips the content cursor while `renderer.prompt_active` is set so a
-  -- later `draw` does not yank it back into the content window.
+  -- Background sessions must NOT move the real nvim cursor: that
+  -- would steal focus from the user's currently-active window. Only
+  -- the session whose `Session:close()` etc. has not been called AND
+  -- that owns `current_session` updates the cursor.
+  local is_current = session ~= nil and session == require('kak.ui').current()
+
   if cursor_pos >= 0 then
     if renderer then renderer.prompt_active = true end
-    local cbyte_in_content = render.column_to_byte(built.content_str, cursor_pos)
-    local cbyte = built.prompt_len + cbyte_in_content
-    if cbyte_in_content >= #built.content_str then cbyte = built.prompt_len + #built.content_str end
-    pcall(vim.api.nvim_win_set_cursor, win, { 1, cbyte })
-    pcall(vim.api.nvim__redraw, { cursor = true, win = win, flush = true })
+    if is_current then
+      local cbyte_in_content = render.column_to_byte(built.content_str, cursor_pos)
+      local cbyte = built.prompt_len + cbyte_in_content
+      if cbyte_in_content >= #built.content_str then
+        cbyte = built.prompt_len + #built.content_str
+      end
+      pcall(vim.api.nvim_win_set_cursor, win, { 1, cbyte })
+      pcall(vim.api.nvim__redraw, { cursor = true, win = win, flush = true })
+    end
   else
     -- Status mode: the content cursor is owned by `render._place_cursor`
     -- (prompt_active=false lets it run). Do not touch the cursor here --

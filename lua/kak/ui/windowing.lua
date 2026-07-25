@@ -152,14 +152,9 @@ end
 --- Focus the content window of the active session (no-op if no
 --- session is open). Used by the `nvim-focus` kak command.
 function M.focus_active()
-  local sess = require('kak.ui').active()
+  local sess = require('kak.ui').current()
   if not sess then return end
-  -- Session falls through to Handlers via its metatable; `surface`
-  -- lives on Handlers. The static checker can't follow the __index
-  -- hop so silence the "undefined field" check with a direct lookup.
-  ---@diagnostic disable-next-line: undefined-field
-  local surface = sess.surface
-  if surface and surface.focus then surface:focus() end
+  if sess.surface and sess.surface.focus then sess.surface:focus() end
 end
 
 return M

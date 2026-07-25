@@ -11,23 +11,31 @@ local P = require('kak.ui.protocol')
 ---@field faces kak.ui.faces.Cache
 ---@field renderer kak.ui.render.Renderer
 ---@field popups kak.ui.popups.Manager
+---@field session kak.ui.Session?
 local Handlers = {}
 
----@param opts { ctx: kak.ui.HandlerContext, ui_options: table<string, any>, surface?: kak.ui.surface.Surface }
-function Handlers.setup(opts)
-  Handlers.ctx = opts.ctx
-  Handlers.ui_options = opts.ui_options
-  Handlers.surface = opts.surface
-  Handlers.faces = require('kak.ui.faces').new({ cap = 512 })
-  Handlers.renderer = require('kak.ui.render').new({ faces = Handlers.faces })
-  Handlers.popups = require('kak.ui.popups').new({
-    faces = Handlers.faces,
-    renderer = Handlers.renderer,
+--- Construct a fresh Handlers INSTANCE. Each Kakoune session owns its
+--- own dispatch surface (draw / popups / statusbar) so multiple kak
+--- clients can coexist in a single nvim without cross-routing.
+---@param opts { ctx: kak.ui.HandlerContext, ui_options: table<string, any>, surface?: kak.ui.surface.Surface, session?: kak.ui.Session }
+---@return kak.ui.Handlers
+function Handlers.new(opts)
+  local self = setmetatable({}, { __index = Handlers })
+  self.ctx = opts.ctx
+  self.ui_options = opts.ui_options
+  self.surface = opts.surface
+  self.session = opts.session
+  self.faces = require('kak.ui.faces').new({ cap = 512 })
+  self.renderer = require('kak.ui.render').new({ faces = self.faces })
+  self.popups = require('kak.ui.popups').new({
+    faces = self.faces,
+    renderer = self.renderer,
     surface = opts.surface,
   })
-  if opts.surface then
-    if opts.surface.content_buf then Handlers.renderer:set_buf(opts.surface.content_buf) end
+  if opts.surface and opts.surface.content_buf then
+    self.renderer:set_buf(opts.surface.content_buf)
   end
+  return self
 end
 
 ---@return integer
@@ -98,7 +106,8 @@ function Handlers:draw_status(raw)
     mode_line,
     face,
     style,
-    self.faces
+    self.faces,
+    self.session
   )
 end
 

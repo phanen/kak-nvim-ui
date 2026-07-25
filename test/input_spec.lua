@@ -176,7 +176,7 @@ describe('input handler routing', function()
       local handler = require('kak.ui.input').new({ rpc = conn })
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].buftype = 'nofile'
-      handler:enable(buf)
+      handler:enable()
       local before = vim.on_key and vim.on_key() or 0
       handler:disable()
       local after = vim.on_key and vim.on_key() or 0
@@ -193,19 +193,186 @@ describe('input handler routing', function()
       local conn = {}
       conn.is_closing = function() return false end
       conn.notify = function(self, method, params) sent[#sent + 1] = { method, params } end
-      local handler = require('kak.ui.input').new({ rpc = conn })
+      local ui = require('kak.ui')
+      local input = require('kak.ui.input')
+      local handler = input.new({ rpc = conn })
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].buftype = 'nofile'
-      handler:enable(buf)
+      -- Register a fake session for this content buffer so the global
+      -- on_key listener can route the current buffer to it. The
+      -- registry was emptied in setup() but `set_current` still
+      -- works; we also expose the conn via session_for_buf() by
+      -- shipping a tiny mock that injects through a wrapper.
+      local fake_session = {
+        id = buf,
+        conn = conn,
+        surface = handler.surface,
+      }
+      -- `session_for_buf` consults a module-level SESSIONS table;
+      -- we use `current()` as a fallback for any current-buffer
+      -- lookup by temporarily making our fake the current session.
+      handler:enable()
       vim.api.nvim_set_current_buf(buf)
-      -- <Esc> arrives as a single \27 byte.
-      local ret = handler.on_key_fn('', '\27')
+      -- Point current_session at our fake via the public API.
+      ui.set_current(fake_session)
+      -- <Esc> arrives as a single \27 byte. The handler's global
+      -- on_key closure looks up the session by the current buffer.
+      local fn = assert(input._on_key_fn(), 'global on_key should be installed')
+      local ret = fn('', '\27')
       handler:disable()
+      ui.set_current(nil)
       return { ret = ret, sent = sent }
     end)
     h.eq('', got.ret)
     h.eq(1, #got.sent)
     h.eq('keys', got.sent[1][1])
     h.eq('<esc>', got.sent[1][2][1])
+  end)
+
+  -- Regression for the multi-client on_key double-install bug.
+  -- Two Handler instances must share a single global `vim.on_key`
+  -- listener; the second `:enable()` only bumps the refcount.
+  -- Enabling two handlers and then disabling both must also
+  -- restore the original `vim.on_key()` callback count (i.e. the
+  -- listener is torn down exactly once, at refcount == 0).
+  it('two handlers share a single global on_key listener (regression)', function()
+    local counts = h.exec_lua(function()
+      local input = require('kak.ui.input')
+      local conn_a = {
+        notify = function() end,
+        is_closing = function() return false end,
+      }
+      local conn_b = {
+        notify = function() end,
+        is_closing = function() return false end,
+      }
+      local h_a = input.new({ rpc = conn_a })
+      local h_b = input.new({ rpc = conn_b })
+
+      local baseline = vim.on_key and vim.on_key() or 0
+
+      h_a:enable()
+      local after_first = vim.on_key and vim.on_key() or 0
+      local state_after_first = input._global_state()
+
+      -- A SECOND enable must NOT install a second on_key callback.
+      h_b:enable()
+      local after_second = vim.on_key and vim.on_key() or 0
+      local state_after_second = input._global_state()
+
+      -- The refcount is 2, but the listener is still installed once.
+      h_a:disable()
+      local state_after_dis_a = input._global_state()
+      local after_dis_a = vim.on_key and vim.on_key() or 0
+
+      -- Disabling the second handler is what finally tears the
+      -- listener down (refcount -> 0).
+      h_b:disable()
+      local state_after_dis_b = input._global_state()
+      local after_dis_b = vim.on_key and vim.on_key() or 0
+
+      return {
+        baseline = baseline,
+        after_first = after_first,
+        after_second = after_second,
+        after_dis_a = after_dis_a,
+        after_dis_b = after_dis_b,
+        state_after_first = state_after_first,
+        state_after_second = state_after_second,
+        state_after_dis_a = state_after_dis_a,
+        state_after_dis_b = state_after_dis_b,
+      }
+    end)
+    -- Refcount path: 0 -> 1 -> 2 -> 1 -> 0.
+    h.eq(1, counts.state_after_first.on_key_refcount)
+    h.eq(2, counts.state_after_second.on_key_refcount)
+    h.eq(1, counts.state_after_dis_a.on_key_refcount)
+    h.eq(0, counts.state_after_dis_b.on_key_refcount)
+    -- Listener installed only once (the first enable) and torn
+    -- down only once (the last disable).
+    h.eq(true, counts.state_after_first.on_key_installed)
+    h.eq(true, counts.state_after_second.on_key_installed)
+    h.eq(true, counts.state_after_dis_a.on_key_installed)
+    h.eq(false, counts.state_after_dis_b.on_key_installed)
+    -- The refcount map matches the nvim-side count exactly.
+    h.eq(1, counts.after_first - counts.baseline)
+    h.eq(1, counts.after_second - counts.baseline)
+    h.eq(1, counts.after_dis_a - counts.baseline)
+    h.eq(0, counts.after_dis_b - counts.baseline)
+  end)
+
+  -- Regression for the multi-client paste refcount bug. Two
+  -- handlers must share a single `vim.paste` override; disabling
+  -- one must NOT restore the original while the other is still
+  -- enabled. The original is only restored when the refcount hits 0.
+  it('two handlers share a single vim.paste override (regression)', function()
+    local probe = h.exec_lua(function()
+      local input = require('kak.ui.input')
+      local saved = vim.paste
+      local conn = {
+        notify = function() end,
+        is_closing = function() return false end,
+      }
+      local h_a = input.new({ rpc = conn })
+      local h_b = input.new({ rpc = conn })
+
+      local state_before = input._global_state()
+
+      h_a:enable()
+      local state_after_a = input._global_state()
+      local paste_after_a = vim.paste
+      local paste_is_saved_after_a = (paste_after_a == saved)
+
+      h_b:enable()
+      local state_after_b = input._global_state()
+      local paste_after_b = vim.paste
+      local paste_is_saved_after_b = (paste_after_b == saved)
+
+      -- Disable A; B is still enabled, so `vim.paste` must stay
+      -- routed (not clobbered back to the original).
+      h_a:disable()
+      local state_after_dis_a = input._global_state()
+      local paste_after_dis_a = vim.paste
+      local paste_is_saved_after_dis_a = (paste_after_dis_a == saved)
+
+      -- Disable B; refcount hits 0, original is restored.
+      h_b:disable()
+      local state_after_dis_b = input._global_state()
+      local paste_after_dis_b = vim.paste
+      local paste_is_saved_after_dis_b = (paste_after_dis_b == saved)
+
+      return {
+        state_before = state_before,
+        state_after_a = state_after_a,
+        state_after_b = state_after_b,
+        state_after_dis_a = state_after_dis_a,
+        state_after_dis_b = state_after_dis_b,
+        paste_is_saved_after_a = paste_is_saved_after_a,
+        paste_is_saved_after_b = paste_is_saved_after_b,
+        paste_is_saved_after_dis_a = paste_is_saved_after_dis_a,
+        paste_is_saved_after_dis_b = paste_is_saved_after_dis_b,
+        paste_a_eq_b = (paste_after_a == paste_after_b),
+        paste_dis_a_eq_a = (paste_after_dis_a == paste_after_a),
+      }
+    end)
+    h.eq(0, probe.state_before.paste_refcount)
+    h.eq(false, probe.state_before.paste_installed)
+    h.eq(1, probe.state_after_a.paste_refcount)
+    h.eq(true, probe.state_after_a.paste_installed)
+    h.eq(2, probe.state_after_b.paste_refcount)
+    h.eq(true, probe.state_after_b.paste_installed)
+    h.eq(1, probe.state_after_dis_a.paste_refcount)
+    h.eq(true, probe.state_after_dis_a.paste_installed)
+    h.eq(0, probe.state_after_dis_b.paste_refcount)
+    h.eq(false, probe.state_after_dis_b.paste_installed)
+    -- The override identity stays the same across enables (single
+    -- install). `vim.paste` remains the override while ANY handler
+    -- is enabled, and is restored only on the last disable.
+    h.eq(true, probe.paste_a_eq_b)
+    h.eq(true, probe.paste_dis_a_eq_a)
+    h.eq(false, probe.paste_is_saved_after_a)
+    h.eq(false, probe.paste_is_saved_after_b)
+    h.eq(false, probe.paste_is_saved_after_dis_a)
+    h.eq(true, probe.paste_is_saved_after_dis_b)
   end)
 end)

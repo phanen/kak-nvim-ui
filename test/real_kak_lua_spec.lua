@@ -144,7 +144,7 @@ describe('real kak lua filetype', function()
       end)
 
       local content_ns = vim.api.nvim_create_namespace('kak.ui.render.content')
-      local marks = vim.api.nvim_buf_get_extmarks(sess.buf, content_ns, 0, -1, { details = true })
+      local marks = vim.api.nvim_buf_get_extmarks(sess.id, content_ns, 0, -1, { details = true })
 
       local groups = {}
       for _, m in ipairs(marks) do
