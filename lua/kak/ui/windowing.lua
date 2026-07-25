@@ -11,14 +11,18 @@
 ---
 --- This module owns:
 ---   * `listen_socket()` -- cached `vim.fn.serverstart()` path passed
----     to the spawned kak child via `KAK_NVIM_LISTEN`.
+---     to the spawned kak child in env `NVIM` (mirrors Nvim's own
+---     convention; Nvim sets `$NVIM` to `v:servername` for children,
+---     `vim.system` does not, so we set it explicitly).
 ---   * `kak_script_path()` -- absolute path to `kak/nvim.kak` so the
----     child can source it on startup (registers the windowing-module
----     sub-commands and aliases `focus`).
+---     child can source it on startup.
 ---   * `inject_args(opts)` -- mutates an `opts` table for
 ---     `kak.ui.open` so EVERY open (`Kak`, `KakNewWin`, `KakNewTab`)
----     picks up the listen env and a leading `-e 'source ...; set
----     global windowing_module nvim'` argument.
+---     picks up the listen env and a leading
+---     `-e 'source ...; require-module nvim; set global windowing_module nvim'`
+---     argument. The `require-module nvim` is required: `provide-module`
+---     only registers the module body for later execution, and without
+---     the require the `nvim-terminal-*` commands are never defined.
 ---   * `focus_active()` -- focus the content window of the live
 ---     session, used by the `nvim-focus` kak command.
 ---
@@ -74,10 +78,17 @@ end
 --- Inject nvim-windowing scaffolding into an `opts` table for
 --- `kak.ui.open`.
 ---
---- Adds `opts.env.KAK_NVIM_LISTEN` (so the child kak can shell back
---- into us) and folds `source <kak_script>; set global windowing_module
---- nvim` into the FIRST `-e` payload so the child registers the
---- `nvim-*` windowing commands and overrides the default module.
+--- Adds `opts.env.NVIM` (so the child kak can shell back into us)
+--- and folds `source <kak_script>; require-module nvim; set global
+--- windowing_module nvim` into the FIRST `-e` payload so the child
+--- registers AND executes the `nvim-*` windowing commands and
+--- overrides the default module.
+---
+--- `require-module nvim` is required because `provide-module` only
+--- registers the module body for later execution; without the
+--- explicit require the `define-command` calls inside `kak/nvim.kak`
+--- never run and `:new` reports `nvim-terminal-window: no such
+--- command`.
 ---
 --- Kakoune accepts exactly one `-e` flag, so we cannot append a
 --- second one -- we must merge into whatever the caller passed (or
@@ -91,9 +102,11 @@ function M.inject_args(opts)
   ---@type table<string,string>?
   local env_in = opts.env
   local env = env_in and vim.deepcopy(env_in) or {}
-  env.KAK_NVIM_LISTEN = M.listen_socket()
+  env.NVIM = M.listen_socket()
   opts.env = env
-  local preamble = 'source ' .. M.kak_script_path() .. '; set global windowing_module nvim; '
+  local preamble = 'source '
+    .. M.kak_script_path()
+    .. '; require-module nvim; set global windowing_module nvim; '
   ---@type string[]
   local user = opts.extra_args or {}
   local merged = false

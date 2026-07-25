@@ -8,18 +8,21 @@
 #
 #   1. `kak-nvim-ui` starts an nvim listen socket via
 #      `vim.fn.serverstart()` and passes the path to the spawned
-#      kak child in env `KAK_NVIM_LISTEN`.
+#      kak child in env `NVIM` (mirrors Nvim's own convention; `vim.system`
+#      does NOT auto-set `$NVIM` so the plugin sets it explicitly).
 #   2. The child sources this file on startup (see
-#      `lua/kak/ui/windowing.lua` `inject_args`), which registers
-#      `nvim-terminal-window` / `nvim-terminal-horizontal` /
-#      `nvim-terminal-vertical` / `nvim-terminal-tab` / `nvim-focus`
-#      and aliases `global focus nvim-focus`.
+#      `lua/kak/ui/windowing.lua` `inject_args`), which REGISTERS the
+#      `provide-module nvim` body. The injected `-e` then calls
+#      `require-module nvim` to actually run that body -- `provide-module`
+#      alone only registers; without the require the `define-command`
+#      calls below never execute and `:new` reports
+#      `nvim-terminal-window: no such command`.
 #   3. Kakoune calls `<windowing_module>-terminal-<placement>` for
 #      `:new` (see `rc/windowing/new-client.kak`). Each command shells
-#      `nvim --server "$KAK_NVIM_LISTEN" --remote-send ':KakNewWin
-#      <placement> %val{session}<CR>'`, which creates a split / tab in
-#      the SAME nvim and calls `kak.ui.open()` to attach a fresh
-#      json-ui client to the current session.
+#      `nvim --server "$NVIM" --remote-send ':KakNewWin <placement>
+#      %val{session}<CR>'`, which creates a split / tab in the SAME
+#      nvim and calls `kak.ui.open()` to attach a fresh json-ui
+#      client to the current session.
 #
 # V1 LIMITATION:
 #
@@ -40,14 +43,14 @@
 
 provide-module nvim %{
 
-    declare-option -docstring %{listen socket nvim exposes for `--server`/`--remote-send`; set automatically by kak-nvim-ui} \
-        str nvim_listen ''
-
+    # Fail loudly at module-require time if the parent nvim did not
+    # export its listen socket. Commands below read $NVIM directly so
+    # they work in any buffer scope. We intentionally do NOT declare
+    # a `nvim_listen` buffer-scope option: at startup there is no
+    # buffer context yet and `set-option buffer` would error.
     evaluate-commands %sh{
-        if [ -z "${kak_client_env_KAK_NVIM_LISTEN}" ]; then
-            echo 'fail KAK_NVIM_LISTEN not set; the nvim that spawned this kak client did not export its listen socket'
-        else
-            echo "set-option buffer nvim_listen ${kak_client_env_KAK_NVIM_LISTEN}"
+        if [ -z "$NVIM" ]; then
+            echo 'fail NVIM not set; the nvim that spawned this kak client did not export its listen socket'
         fi
     }
 
@@ -56,9 +59,9 @@ nvim-terminal-window <program> [<arguments>]: open <program> as a new split in t
 The current session is reused; the new window hosts a fresh json-ui client via kak-nvim-ui' \
     %{
         evaluate-commands %sh{
-            listen="$kak_client_env_KAK_NVIM_LISTEN"
+            listen="$NVIM"
             if [ -z "$listen" ]; then
-                echo 'fail %{nvim-terminal-window: KAK_NVIM_LISTEN not set}'
+                echo 'fail %{nvim-terminal-window: NVIM not set}'
                 exit 0
             fi
             # Drop the placeholder `kak -c <session> -e "<cmds>"` we
@@ -75,9 +78,9 @@ nvim-terminal-horizontal <program> [<arguments>]: open <program> as a horizontal
 The current session is reused; the new window hosts a fresh json-ui client via kak-nvim-ui' \
     %{
         evaluate-commands %sh{
-            listen="$kak_client_env_KAK_NVIM_LISTEN"
+            listen="$NVIM"
             if [ -z "$listen" ]; then
-                echo 'fail %{nvim-terminal-horizontal: KAK_NVIM_LISTEN not set}'
+                echo 'fail %{nvim-terminal-horizontal: NVIM not set}'
                 exit 0
             fi
             nvim --server "$listen" --remote-send ":KakNewWin horizontal $kak_opt_session<CR>" \
@@ -91,9 +94,9 @@ nvim-terminal-vertical <program> [<arguments>]: open <program> as a vertical spl
 The current session is reused; the new window hosts a fresh json-ui client via kak-nvim-ui' \
     %{
         evaluate-commands %sh{
-            listen="$kak_client_env_KAK_NVIM_LISTEN"
+            listen="$NVIM"
             if [ -z "$listen" ]; then
-                echo 'fail %{nvim-terminal-vertical: KAK_NVIM_LISTEN not set}'
+                echo 'fail %{nvim-terminal-vertical: NVIM not set}'
                 exit 0
             fi
             nvim --server "$listen" --remote-send ":KakNewWin vertical $kak_opt_session<CR>" \
@@ -107,9 +110,9 @@ nvim-terminal-tab <program> [<arguments>]: open <program> as a new tab in the ru
 The current session is reused; the new tab hosts a fresh json-ui client via kak-nvim-ui' \
     %{
         evaluate-commands %sh{
-            listen="$kak_client_env_KAK_NVIM_LISTEN"
+            listen="$NVIM"
             if [ -z "$listen" ]; then
-                echo 'fail %{nvim-terminal-tab: KAK_NVIM_LISTEN not set}'
+                echo 'fail %{nvim-terminal-tab: NVIM not set}'
                 exit 0
             fi
             nvim --server "$listen" --remote-send ":KakNewTab $kak_opt_session<CR>" \
@@ -123,9 +126,9 @@ nvim-focus [<client>]: focus the running nvim''s window hosting the active json-
 The optional <client> argument is ignored (always focuses the live session)' \
     %{
         evaluate-commands %sh{
-            listen="$kak_client_env_KAK_NVIM_LISTEN"
+            listen="$NVIM"
             if [ -z "$listen" ]; then
-                echo 'fail %{nvim-focus: KAK_NVIM_LISTEN not set}'
+                echo 'fail %{nvim-focus: NVIM not set}'
                 exit 0
             fi
             nvim --server "$listen" --remote-send ':KakFocus<CR>' \

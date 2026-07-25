@@ -47,19 +47,19 @@ describe('kak.ui.windowing', function()
 
   describe('inject_args', function()
     it(
-      'sets KAK_NVIM_LISTEN env and emits exactly one -e with the source/windowing_module payload',
+      'sets NVIM env and emits exactly one -e with source + require-module + windowing_module',
       function()
         local result = h.exec_lua(function()
           local w = require('kak.ui.windowing')
           local opts = w.inject_args({})
           return {
-            env_KAK = opts.env.KAK_NVIM_LISTEN,
+            env_NVIM = opts.env.NVIM,
             extra_args = opts.extra_args,
           }
         end)
         assert(
-          type(result.env_KAK) == 'string' and result.env_KAK ~= '',
-          'expected KAK_NVIM_LISTEN set, got: ' .. vim.inspect(result.env_KAK)
+          type(result.env_NVIM) == 'string' and result.env_NVIM ~= '',
+          'expected NVIM set, got: ' .. vim.inspect(result.env_NVIM)
         )
         -- Default path (no caller -e): we emit `-e` followed by the
         -- standalone preamble.
@@ -71,6 +71,13 @@ describe('kak.ui.windowing', function()
         assert(
           payload:find('kak/nvim.kak', 1, true) ~= nil,
           'payload missing kak/nvim.kak path: ' .. payload
+        )
+        -- Regression for the v1 bug: without `require-module nvim`,
+        -- `provide-module` only registers the body and
+        -- `define-command` never runs.
+        assert(
+          payload:find('require-module nvim', 1, true) ~= nil,
+          'payload missing require-module nvim: ' .. payload
         )
         assert(
           payload:find('set global windowing_module nvim', 1, true) ~= nil,
@@ -87,6 +94,10 @@ describe('kak.ui.windowing', function()
       end)
       h.eq('-e', result[1])
       assert(result[2]:find('source ', 1, true) ~= nil, '2nd entry should be the source payload')
+      assert(
+        result[2]:find('require-module nvim', 1, true) ~= nil,
+        '2nd entry should require-module nvim'
+      )
       assert(result[2]:find('echo hi', 1, true) ~= nil, 'caller payload should survive')
       -- Caller entries that aren't `-e` are preserved at the tail;
       -- the original `echo hi` arg (now folded into result[2]) is
@@ -104,6 +115,10 @@ describe('kak.ui.windowing', function()
       h.eq(2, #result)
       h.eq('-e', result[1])
       assert(result[2]:find('source ', 1, true) ~= nil, 'payload missing source')
+      assert(
+        result[2]:find('require-module nvim', 1, true) ~= nil,
+        'payload missing require-module'
+      )
       assert(result[2]:find('echo hi', 1, true) ~= nil, 'caller payload should survive')
     end)
 
@@ -127,9 +142,9 @@ describe('kak.ui.windowing', function()
         local opts = w.inject_args({ env = caller_env })
         return {
           same_table = opts.env == caller_env,
-          caller_foo = caller_env.KAK_NVIM_LISTEN,
+          caller_foo = caller_env.NVIM,
           opts_foo = opts.env.FOO,
-          opts_kak = opts.env.KAK_NVIM_LISTEN,
+          opts_NVIM = opts.env.NVIM,
         }
       end)
       -- We deep-copy to avoid surprising the caller if they reuse the
@@ -137,10 +152,7 @@ describe('kak.ui.windowing', function()
       h.eq(false, result.same_table)
       h.eq('bar', result.opts_foo)
       h.eq(nil, result.caller_foo)
-      assert(
-        result.opts_kak ~= nil and result.opts_kak ~= '',
-        'KAK_NVIM_LISTEN missing on returned opts'
-      )
+      assert(result.opts_NVIM ~= nil and result.opts_NVIM ~= '', 'NVIM missing on returned opts')
     end)
 
     it('is idempotent across two consecutive calls (single -e, args survive)', function()
@@ -164,7 +176,7 @@ describe('kak.ui.windowing', function()
             and first.extra_args[2]:find('echo first', 1, true) ~= nil,
           second_has_second = second.extra_args[2]
             and second.extra_args[2]:find('echo second', 1, true) ~= nil,
-          shared_listen = first.env.KAK_NVIM_LISTEN == second.env.KAK_NVIM_LISTEN,
+          shared_NVIM = first.env.NVIM == second.env.NVIM,
         }
       end)
       -- Caller passes {-e, payload} (2 args); merged with our preamble
@@ -175,7 +187,7 @@ describe('kak.ui.windowing', function()
       h.eq(1, result.second_dash_e)
       h.eq(true, result.first_has_first)
       h.eq(true, result.second_has_second)
-      h.eq(true, result.shared_listen)
+      h.eq(true, result.shared_NVIM)
     end)
   end)
 
@@ -198,17 +210,23 @@ describe('kak.ui.windowing', function()
   describe('kak script', function()
     -- Optional syntax check; skip when `kak` is not available so the
     -- suite doesn't fail in bare environments.
-    it('sources cleanly under kak when kak is installed', function()
+    it('sources and requires the nvim module cleanly under kak', function()
       local kak = h.kak_path()
       -- The test runner is plain Lua (outside nvim), so we cannot
       -- rely on `vim.fn`; use `h.fn` (which delegates through the
       -- embedded session) for any path / filereadable probing. We
       -- capture stderr via a redirect into a temp file and assert
       -- the exit code + stderr are clean.
+      --
+      -- The payload mirrors what `inject_args` sends: `source` the
+      -- script (registers `provide-module nvim`) AND `require-module`
+      -- the module (executes the body so `define-command` calls run).
+      -- The old payload only sourced, so the bug went undetected by
+      -- this smoke test -- the commands simply were never defined.
       local script = h.fn.fnamemodify('./kak/nvim.kak', ':p')
       if h.fn.filereadable(script) ~= 1 then return end -- spec skipped
       local tmp = h.fn.tempname()
-      local payload = 'source ' .. script .. '; echo ok'
+      local payload = 'source ' .. script .. '; require-module nvim; echo ok'
       local cmd = string.format('%s -e %q 2> %q 1> /dev/null', kak, payload, tmp)
       local ok = os.execute(cmd)
       local err = (function()
