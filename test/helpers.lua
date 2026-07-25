@@ -2,6 +2,7 @@
 --   write_executable / write_file / write_wire_logged - tmp scripts/files
 --   with_kak_session / with_fake_kak - spawn and run a body in the child
 --   with_screen - attach a Screen for screen:expect / snapshot_util
+--   rmdir - safe recursive delete (replaces `rm -rf` shell patterns)
 
 local helpers = require('nvim-test.helpers')
 
@@ -133,6 +134,15 @@ function M.with_screen(width, height)
   local screen = Screen.new(width, height)
   screen:attach()
   return screen
+end
+
+--- Recursively delete `path`. Safe replacement for
+--- `os.execute('rm -rf ' .. path)`, which is shell-injection-prone when
+--- `path` contains spaces or metacharacters. Uses libuv via `vim.fs.rm`
+--- (available in nvim 0.8+) and tolerates a missing path.
+--- @param path string
+function M.rmdir(path)
+  vim.fs.rm(path, { recursive = true, force = true })
 end
 
 return M
