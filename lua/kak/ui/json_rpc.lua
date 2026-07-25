@@ -14,10 +14,10 @@ local M = {}
 local uv = vim.uv or vim.loop
 if not uv then error('kak.ui.json_rpc requires vim.uv (nvim 0.5+)') end
 
-local json_encode = (vim.json and vim.json.encode) or vim.fn.json_encode
-local json_decode = (vim.json and vim.json.decode) or vim.fn.json_decode
+local json_encode = vim.json.encode
+local json_decode = vim.json.decode
 
-local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NIL' end })
+local NIL = vim.NIL
 
 local log = require('kak.ui.log').log
 

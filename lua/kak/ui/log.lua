@@ -40,9 +40,9 @@ local function make_logger()
   end
   if has_real_log() then
     ---@diagnostic disable-next-line: param-type-mismatch
-    local real = vim.log.new({ name = 'kak-ui', level = 'WARN' })
+    local real = vim.log.new({ name = 'kak-ui', level = threshold })
     if type(real) == 'table' and type(real.set_level) == 'function' then
-      real.set_level(M.levels.WARN)
+      real:set_level(threshold)
     end
     return real
   end
