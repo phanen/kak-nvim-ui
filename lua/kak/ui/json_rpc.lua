@@ -80,10 +80,10 @@ end
 
 --- @class kak.ui.json_rpc.Transport
 --- @field closing boolean
---- @field stdin uv_pipe_t
---- @field stdout uv_pipe_t
---- @field stderr uv_pipe_t|nil
---- @field process uv_process_t|nil
+--- @field stdin uv.uv_pipe_t
+--- @field stdout uv.uv_pipe_t
+--- @field stderr uv..uv_pipe_t|nil
+--- @field process uv.uv_process_t|nil
 local Transport = {}
 Transport.__index = Transport
 
