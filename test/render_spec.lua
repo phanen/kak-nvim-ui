@@ -94,55 +94,65 @@ describe('codepoint width', function()
   end)
 end)
 
-describe('cursor extmark visual width', function()
+describe('cursor placement', function()
   before_each(function() h.setup() end)
 
-  it('covers 1 byte under ASCII cursor', function()
+  it('places real nvim cursor on ASCII text at column=1', function()
     local r = h.exec_lua(function()
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].modifiable = true
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'abc' })
       vim.bo[buf].modifiable = false
+      local win = vim.api.nvim_open_win(buf, false, {
+        relative = 'editor',
+        row = 0,
+        col = 0,
+        width = 80,
+        height = 24,
+        style = 'minimal',
+      })
       local render = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
       render:set_buf(buf)
       render:draw({
         { { face = nil, contents = 'abc' } },
       }, { line = 0, column = 1 }, nil, nil)
-      -- ns = -1 returns extmarks from every namespace.
-      local marks = vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })
-      local cursor = nil
-      for _, m in ipairs(marks) do
-        local hl = m[4] and m[4].hl_group
-        if hl and hl:match('^KakFace_') then cursor = m end
-      end
-      return { count = cursor and 1 or 0, end_col = cursor and cursor[4].end_col or -1 }
+      local pos = vim.api.nvim_win_get_cursor(win)
+      local cursor_ns = vim.api.nvim_create_namespace('kak.ui.render.cursor')
+      local remaining = #vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {})
+      pcall(vim.api.nvim_win_close, win, true)
+      return { pos = pos, cursor_marks = remaining }
     end)
-    h.eq(1, r.count)
-    h.eq(2, r.end_col)
+    h.eq({ 1, 1 }, r.pos)
+    h.eq(0, r.cursor_marks)
   end)
 
-  it('covers 3 bytes under CJK cursor', function()
+  it('places real nvim cursor on CJK text at column=0', function()
     local r = h.exec_lua(function()
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].modifiable = true
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '中文' })
       vim.bo[buf].modifiable = false
+      local win = vim.api.nvim_open_win(buf, false, {
+        relative = 'editor',
+        row = 0,
+        col = 0,
+        width = 80,
+        height = 24,
+        style = 'minimal',
+      })
       local render = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
       render:set_buf(buf)
-      -- column 0 = before the first char, so cursor covers bytes 0..3.
       render:draw({
         { { face = nil, contents = '中文' } },
       }, { line = 0, column = 0 }, nil, nil)
-      local marks = vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })
-      local cursor = nil
-      for _, m in ipairs(marks) do
-        local hl = m[4] and m[4].hl_group
-        if hl and hl:match('^KakFace_') then cursor = m end
-      end
-      return { count = cursor and 1 or 0, end_col = cursor and cursor[4].end_col or -1 }
+      local pos = vim.api.nvim_win_get_cursor(win)
+      local cursor_ns = vim.api.nvim_create_namespace('kak.ui.render.cursor')
+      local remaining = #vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {})
+      pcall(vim.api.nvim_win_close, win, true)
+      return { pos = pos, cursor_marks = remaining }
     end)
-    h.eq(1, r.count)
-    h.eq(3, r.end_col)
+    h.eq({ 1, 0 }, r.pos)
+    h.eq(0, r.cursor_marks)
   end)
 end)
 

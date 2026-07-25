@@ -23,7 +23,6 @@
 local M = {}
 
 local CONTENT_NS = vim.api.nvim_create_namespace('kak.ui.render.content')
-local CURSOR_NS = vim.api.nvim_create_namespace('kak.ui.render.cursor')
 
 --- Convert a codepoint column to a byte offset within `line`.
 --- @param line string
@@ -166,7 +165,6 @@ function Renderer:draw(lines, cursor_pos, default_face, padding_face)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
 
   vim.api.nvim_buf_clear_namespace(buf, CONTENT_NS, 0, -1)
-  vim.api.nvim_buf_clear_namespace(buf, CURSOR_NS, 0, -1)
 
   local text = compose_text(lines)
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
@@ -212,35 +210,22 @@ function Renderer:draw(lines, cursor_pos, default_face, padding_face)
   end
 end
 
+--- Place the real nvim cursor at the Kakoune `coord`. Earlier
+--- revisions drew a reverse extmark here AND called a typo'd
+--- `vim.nvim_win_set_cursor` inside a `pcall`, so the real cursor was
+--- never actually moved; the extmark was the only visible signal.
 ---@param buf integer
 ---@param coord kak.ui.render.CursorPos
----@param face_for_default kak.ui.faces.Face?
-function Renderer:_place_cursor(buf, coord, face_for_default)
+---@param _face_for_default kak.ui.faces.Face?
+function Renderer:_place_cursor(buf, coord, _face_for_default)
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(coord.line, total - 1))
   local lines = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)
   local line_text = lines[1] or ''
   local col = column_to_byte(line_text, coord.column)
   self.last_cursor = { line = row, column = col }
-  ---@type kak.ui.faces.Face
-  local cursor_face = {
-    fg = (face_for_default and face_for_default.bg) or 'default',
-    bg = (face_for_default and face_for_default.fg) or 'default',
-    underline = 'default',
-    attributes = { 'reverse' },
-  }
-  local hl = self.faces:get(cursor_face)
-  -- Cover the whole UTF-8 codepoint under the cursor; nvim interprets
-  -- `end_col` as byte offset, so for CJK we need 3 (or more) bytes, not 1.
-  local char_end = math.min(col + codepoint_width(line_text, col), #line_text)
-  if char_end <= col then char_end = math.min(col + 1, #line_text) end
-  pcall(vim.api.nvim_buf_set_extmark, buf, CURSOR_NS, row, col, {
-    end_col = char_end,
-    hl_group = hl,
-    right_gravity = false,
-  })
   local win = vim.fn.bufwinid(buf)
-  if win and win > 0 then pcall(vim.nvim_win_set_cursor, win, { row + 1, col }) end
+  if win and win > 0 then vim.api.nvim_win_set_cursor(win, { row + 1, col }) end
 end
 
 ---@type fun(line: string, column: integer): integer
