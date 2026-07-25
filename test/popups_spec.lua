@@ -197,7 +197,6 @@ describe('popup window positioning', function()
     local result = with_big_screen([[
       local renderer = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
       renderer:set_buf(vim.api.nvim_create_buf(false, true))
-      renderer:set_mode_buf(vim.api.nvim_create_buf(false, true))
       local popups = require('kak.ui.popups').new({ faces = renderer.faces, renderer = renderer })
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
       popups:menu_show(
