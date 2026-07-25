@@ -12,6 +12,8 @@
 
 local M = {}
 
+local log = require('kak.ui.log').log
+
 --- nvim `<...>` body -> Kakoune `<...>` body (no surrounding angle brackets).
 local NVIM_BODY_TO_KAK = {
   CR = 'ret',
@@ -188,7 +190,7 @@ function Handler:enable(buf)
     local keys = M.from_on_key(typed)
     if #keys > 0 then
       local ok, err = pcall(handler.rpc.notify, handler.rpc, 'keys', keys)
-      if not ok then io.stderr:write('[kak.ui] keys notify error: ' .. tostring(err) .. '\n') end
+      if not ok then log.warn('keys notify error:', tostring(err)) end
     end
     -- Returning '' tells nvim to drop the key. Without this, nvim would
     -- also act on ESC, `:`, `/`, etc., causing double behavior.

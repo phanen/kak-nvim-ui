@@ -12,6 +12,7 @@ local faces = require('kak.ui.faces')
 local render = require('kak.ui.render')
 local popups = require('kak.ui.popups')
 local input = require('kak.ui.input')
+local log = require('kak.ui.log').log
 
 local M = {}
 
@@ -104,9 +105,7 @@ function M.open(opts)
             fn(protocol.decode({ jsonrpc = '2.0', method = method, params = params }).params)
           end
         )
-        if not ok then
-          io.stderr:write('[kak.ui] handler ' .. method .. ' error: ' .. tostring(err) .. '\n')
-        end
+        if not ok then log.warn('handler', method, 'error:', tostring(err)) end
       end
     end,
     -- Kakoune never sends inbound requests; this stub is required by
@@ -125,16 +124,13 @@ function M.open(opts)
         end
       )
     end,
-    on_error = function(code, err)
-      io.stderr:write(string.format('[kak.ui] rpc error %d: %s\n', code, vim.inspect(err)))
-    end,
+    on_error = function(code, err) log.warn('rpc error', code, vim.inspect(err)) end,
   }
 
   conn = json_rpc.spawn(argv, {
     dispatchers = dispatchers,
     cwd = opts.cwd,
     env = opts.env,
-    log_level = opts.log_level or 'warn',
   })
 
   local buf = h.ensure_buf()

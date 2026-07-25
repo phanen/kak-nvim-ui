@@ -19,6 +19,8 @@ local json_decode = (vim.json and vim.json.decode) or vim.fn.json_decode
 
 local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NIL' end })
 
+local log = require('kak.ui.log').log
+
 local function schedule_wrap(fn)
   if vim.schedule_wrap then return vim.schedule_wrap(fn) end
   return function(...)
@@ -32,33 +34,6 @@ local function schedule_fn(fn)
     local args = { ... }
     vim.schedule(function() fn(unpack(args)) end)
   end
-end
-
-local function make_log(level)
-  local levels = { trace = 0, debug = 1, info = 2, warn = 3, error = 4, off = 5 }
-  local threshold = levels[level or 'warn'] or 3
-  local function emit(name, ...)
-    if (levels[name] or 99) < threshold then return end
-    local n = select('#', ...)
-    local parts = { '[kak.json_rpc]', name }
-    for i = 1, n do
-      local v = select(i, ...)
-      if type(v) == 'string' then
-        parts[#parts + 1] = v
-      elseif type(v) == 'table' then
-        parts[#parts + 1] = vim.inspect(v)
-      else
-        parts[#parts + 1] = tostring(v)
-      end
-    end
-    io.stderr:write(table.concat(parts, ' '), '\n')
-  end
-  return {
-    info = function(...) emit('info', ...) end,
-    debug = function(...) emit('debug', ...) end,
-    warn = function(...) emit('warn', ...) end,
-    error = function(...) emit('error', ...) end,
-  }
 end
 
 local function ndjson_encode(msg) return msg .. '\n' end
@@ -125,7 +100,7 @@ function Transport:terminate()
   if self.on_exit_cb then self.on_exit_cb(0, 0) end
 end
 
-function Transport.spawn(cmd, extra, log)
+function Transport.spawn(cmd, extra)
   local stdin = uv.new_pipe(false)
   local stdout = uv.new_pipe(false)
   local stderr = uv.new_pipe(false)
@@ -138,7 +113,7 @@ function Transport.spawn(cmd, extra, log)
     if extra.env then spawn_opts.env = extra.env end
   end
   local handle, pid_or_err = uv.spawn(cmd[1], spawn_opts, function(code, signal)
-    if log then log.info('subprocess exit', { code = code, signal = signal }) end
+    log.info('subprocess exit', { code = code, signal = signal })
     if stdout and not stdout:is_closing() then pcall(function() stdout:read_stop() end) end
   end)
   if not handle then
@@ -176,7 +151,7 @@ M.client_errors = {
 
 local ERR_INTERNAL = -32603
 
-function Connection.new(transport, dispatchers, log)
+function Connection.new(transport, dispatchers)
   assert(transport, 'transport required')
   assert(dispatchers, 'dispatchers required')
   assert(type(dispatchers.on_notify) == 'function', 'on_notify required')
@@ -189,7 +164,7 @@ function Connection.new(transport, dispatchers, log)
     request_callbacks = {},
     transport = transport,
     dispatchers = dispatchers,
-    log = log or make_log(),
+    log = log,
     incoming_buf = '',
     closed = false,
   }, Connection)
@@ -234,7 +209,7 @@ function Connection:_dispatch_raw(line)
 end
 
 function Connection:_dispatch(message)
-  self.log.debug('rpc.receive', message)
+  log.debug('rpc.receive', message)
 
   -- Inbound request from peer: JSON-RPC server role.
   if type(message.method) == 'string' and message.id ~= nil then
@@ -256,12 +231,12 @@ function Connection:_dispatch(message)
   -- Inbound response to one of our requests.
   if message.id ~= nil then
     if type(message.id) ~= 'number' or message.id ~= math.floor(message.id) then
-      self.log.error('peer response id not integer', message)
+      log.error('peer response id not integer', message)
       self:on_error(M.client_errors.INVALID_SERVER_MESSAGE, message)
       return
     end
     if message.error == nil and message.result == nil then
-      self.log.error('peer sent empty result and error', message)
+      log.error('peer sent empty result and error', message)
       self:on_error(M.client_errors.INVALID_SERVER_MESSAGE, message)
       return
     end
@@ -291,7 +266,7 @@ function Connection:_send(message)
   if self.transport:is_closing() then return false end
   local ok, json = pcall(json_encode, message)
   if not ok then
-    self.log.error('encode failed', json)
+    log.error('encode failed', json)
     return false
   end
   return self.transport:write(ndjson_encode(json))
@@ -344,23 +319,16 @@ function Connection:on_error(code, err) pcall(self.dispatchers.on_error, code, e
 --- Spawn a child process and start a NDJSON JSON-RPC connection to it
 --- over stdio.
 --- @param cmd string[] Command argv. The first element is the executable.
---- @param opts? { log?: table, dispatchers: kak.ui.json_rpc.Dispatchers,
----                cwd?: string, env?: table<string,string>,
----                log_level?: 'debug'|'info'|'warn'|'error' }
+--- @param opts? { dispatchers: kak.ui.json_rpc.Dispatchers,
+---                cwd?: string, env?: table<string,string> }
 --- @return kak.ui.json_rpc.Connection
 function M.spawn(cmd, opts)
   assert(type(cmd) == 'table' and #cmd >= 1, 'cmd must be non-empty array')
   opts = opts or {}
   assert(type(opts.dispatchers) == 'table', 'opts.dispatchers required')
-  local log = opts.log or make_log(opts.log_level)
-  return Connection.new(
-    Transport.spawn(cmd, { cwd = opts.cwd, env = opts.env }, log),
-    opts.dispatchers,
-    log
-  )
+  return Connection.new(Transport.spawn(cmd, { cwd = opts.cwd, env = opts.env }), opts.dispatchers)
 end
 
-M._make_log = make_log
 M._ndjson_feed = ndjson_feed
 
 return M

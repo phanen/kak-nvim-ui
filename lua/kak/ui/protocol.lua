@@ -6,6 +6,8 @@
 
 local M = {}
 
+local log = require('kak.ui.log').log
+
 local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NIL' end })
 
 -- Tolerate Lua `nil` and `vim.NIL` (what `vim.json.decode` returns for
@@ -200,7 +202,7 @@ function M.dispatch(message, handlers)
   local decoded
   local ok, err = pcall(function() decoded = M.decode(message) end)
   if not ok then
-    io.stderr:write('[kak.ui.protocol] decode error: ', tostring(err), '\n')
+    log.warn('decode error:', tostring(err))
     return
   end
   local h = handlers['on_' .. decoded.method] or handlers.on_default
