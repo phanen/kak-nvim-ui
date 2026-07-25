@@ -567,4 +567,71 @@ describe('input handler routing', function()
     h.eq(true, result.closed_async)
     h.eq(1, result.close_count)
   end)
+
+  -- Regression for the insert-mode cursor off-by-one. Kakoune's
+  -- default `{{mode_info}}` emits a bare "insert" / "replace" atom
+  -- in InsertMode; a substring match catches the bare form AND
+  -- wrapped forms ("*insert*", "[insert]") that the previous
+  -- equality match would miss. After draw_status with an "insert"
+  -- atom, `renderer.current_mode` must be 'insert' so
+  -- `_place_cursor` shifts the real nvim cursor +1 past the just-
+  -- typed char (otherwise the block cursor COVERS the new char).
+  -- We stub `statusbar.render` so we don't have to mount a real
+  -- Surface (the mode-detection logic runs in draw_status BEFORE
+  -- statusbar.render is called -- so this test is valid).
+  it('draw_status sets current_mode=insert from bare mode atom', function()
+    local mode = h.exec_lua(function()
+      local statusbar = require('kak.ui.statusbar')
+      local orig_render = statusbar.render
+      statusbar.render = function() end
+
+      local renderer = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      local handlers = require('kak.ui.handlers')
+
+      local function mk_handlers()
+        local h = handlers.new({
+          ctx = { ui_options = {}, last_force = false },
+          ui_options = {},
+          surface = { content_buf = vim.api.nvim_create_buf(false, true) },
+        })
+        h.renderer = renderer
+        return h
+      end
+
+      local function feed(mode_line)
+        local hh = mk_handlers()
+        hh:draw_status({
+          {},
+          {},
+          0,
+          mode_line,
+          {},
+          'status',
+        })
+        local m = renderer.current_mode
+        hh.surface.content_buf = nil -- avoid leak
+        return m
+      end
+
+      local result = {
+        bare = feed({ { contents = 'insert', face = {} } }),
+        wrapped = feed({ { contents = '[insert]', face = {} } }),
+        normal = feed({ { contents = '1 sel', face = {} } }),
+        replace = feed({ { contents = 'replace', face = {} } }),
+        multi = feed({
+          { contents = 'insert', face = {} },
+          { contents = ' ', face = {} },
+          { contents = '1 sel', face = {} },
+        }),
+      }
+
+      statusbar.render = orig_render
+      return result
+    end)
+    h.eq('insert', mode.bare)
+    h.eq('insert', mode.wrapped)
+    h.eq('normal', mode.normal)
+    h.eq('replace', mode.replace)
+    h.eq('insert', mode.multi)
+  end)
 end)

@@ -82,14 +82,29 @@ function Handlers:draw_status(raw)
   ---@cast style kak.ui.protocol.DrawStyle
   local mode_line = P.parse_line('draw_status', raw[4], 4)
   -- Track the active Kakoune mode so `_place_cursor` can nudge the real
-  -- nvim cursor one cell right in insert/replace (the Kakoune cursor sits
-  -- on the just-typed char; we want the block at the insertion point).
+  -- nvim cursor one cell right in insert/replace (the Kakoune cursor
+  -- sits on the just-typed char; we want the block at the insertion
+  -- point). Kakoune's default `modelinefmt` includes `{{mode_info}}`,
+  -- whose `mode_info()` atom for InsertMode emits a leading "insert"
+  -- text atom (StatusLineMode face). The atom `contents` is the
+  -- bare mode name in plain ASCII -- but only IF the user kept the
+  -- default `{{mode_info}}` token. Users who customized modelinefmt
+  -- to drop the token (or wrapped the mode in brackets / a coloured
+  -- prefix) would silently break the previous `==` match. Use a
+  -- substring match against every mode-line atom so wrapped forms
+  -- like "*insert*" or "[replace]" still register. First match wins,
+  -- matching earlier behaviour.
   local mode = 'normal'
   for _, atom in ipairs(mode_line) do
     local c = atom.contents
-    if c == 'insert' or c == 'replace' then
-      mode = c
-      break
+    if type(c) == 'string' then
+      if c:find('replace', 1, true) then
+        mode = 'replace'
+        break
+      elseif c:find('insert', 1, true) then
+        mode = 'insert'
+        break
+      end
     end
   end
   self.renderer.current_mode = mode
