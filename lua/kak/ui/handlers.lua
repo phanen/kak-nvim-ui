@@ -108,6 +108,7 @@ function Handlers:draw_status(raw)
     end
   end
   self.renderer.current_mode = mode
+  require('kak.ui.render').apply_cursor_shape(mode)
   -- `prompt_active` lets `render._place_cursor` skip the content cursor
   -- while the user is in the command/search/prompt line, so the real
   -- nvim cursor stays in the status float (ui2-style cmdline overlay).

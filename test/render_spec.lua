@@ -155,7 +155,7 @@ describe('cursor placement', function()
     h.eq(0, r.cursor_marks)
   end)
 
-  it('nudges the cursor one cell right in insert mode', function()
+  it('places the cursor at the kakoune column without insert-mode shift', function()
     local r = h.exec_lua(function()
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].modifiable = true
@@ -179,8 +179,24 @@ describe('cursor placement', function()
       pcall(vim.api.nvim_win_close, win, true)
       return { pos = pos }
     end)
-    -- column=1 normally lands on byte 1 (`b`); insert mode shifts +1 to byte 2 (`c`).
-    h.eq({ 1, 2 }, r.pos)
+    -- column=1 lands on byte 1 (`b`); insert mode no longer shifts the
+    -- column (a block covers a cell either way) -- the beam cursor
+    -- shape is what marks the insertion point now.
+    h.eq({ 1, 1 }, r.pos)
+  end)
+
+  it('apply_cursor_shape sets a beam in insert/replace and restores otherwise', function()
+    local r = h.exec_lua(function()
+      local render = require('kak.ui.render')
+      local before = vim.o.guicursor
+      render.apply_cursor_shape('insert')
+      local beam = vim.o.guicursor
+      render.apply_cursor_shape('normal')
+      local restored = vim.o.guicursor
+      return { before = before, beam = beam, restored = restored }
+    end)
+    h.eq('a:ver25-Cursor', r.beam)
+    h.eq(r.before, r.restored)
   end)
 end)
 

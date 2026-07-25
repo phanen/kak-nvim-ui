@@ -387,6 +387,10 @@ function M.open(opts)
         end)
       end
       log.debug('close: done', { id = self.id })
+      -- Give the user's cursor shape back so a window that replaces
+      -- this one (survivor focus or a plain :bd) does not inherit the
+      -- insert/replace beam.
+      require('kak.ui.render').restore_cursor_shape()
     end,
   }
   -- Now that `sess` exists, hook the handlers back to it so
@@ -421,6 +425,14 @@ function M.open(opts)
         group = augroup,
         buffer = content_bufnr,
         callback = function() M.set_current(sess) end,
+      })
+      -- Restore the user's cursor shape when focus leaves the kak
+      -- window so non-kak windows keep their own guicursor. The
+      -- WinEnter -> draw_status path re-applies the beam on return.
+      vim.api.nvim_create_autocmd('WinLeave', {
+        group = augroup,
+        buffer = content_bufnr,
+        callback = function() require('kak.ui.render').restore_cursor_shape() end,
       })
     end)
     if not ok then

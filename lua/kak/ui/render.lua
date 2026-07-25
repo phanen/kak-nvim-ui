@@ -230,11 +230,14 @@ function Renderer:_place_cursor(buf, coord, _face_for_default)
   local row = math.max(0, math.min(coord.line, total - 1))
   local lines = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)
   local line_text = lines[1] or ''
-  -- In insert/replace the Kakoune cursor sits on the just-typed char;
-  -- nudge one cell right so the real nvim block lands at the insertion
-  -- point instead of covering the char that was just typed.
-  local shift = (self.current_mode == 'insert' or self.current_mode == 'replace') and 1 or 0
-  local col = column_to_byte(line_text, coord.column + shift)
+  -- The Kakoune cursor column already points at the insertion cell
+  -- (after the just-typed char). The insert/replace off-by-one is NOT
+  -- fixed by nudging the column (a block covers a full cell either
+  -- way -- shifting right just hides the NEXT char instead); instead
+  -- `M.apply_cursor_shape` swaps the nvim cursor to a beam in
+  -- insert/replace so the vertical bar marks the insertion point
+  -- without covering any character, mirroring kakoune's terminal UI.
+  local col = column_to_byte(line_text, coord.column)
   self.last_cursor = { line = row, column = col }
   local win = vim.fn.bufwinid(buf)
   if win and win > 0 then vim.api.nvim_win_set_cursor(win, { row + 1, col }) end
@@ -248,4 +251,39 @@ M.codepoint_width = codepoint_width
 M.full_face_equal = full_face_equal
 ---@type fun(lines: kak.ui.protocol.Lines?): string[]
 M.compose_text = compose_text
+
+-- Saved user `guicursor` so we can restore it when the kak session
+-- leaves insert/replace (or closes). Lazy: captured on the first
+-- insert/replace draw_status so a user who never enters insert keeps
+-- their default untouched.
+---@type string?
+local orig_guicursor = nil
+
+-- BEAM in insert/replace so the cursor marks the insertion point
+-- without covering a character (kakoune's terminal does the same).
+-- `a:` applies to every nvim mode since the kak content buffer is
+-- always in nvim normal mode; the WinLeave autocmd in `open()`
+-- restores the original so non-kak windows keep their own shape.
+local BEAM_GUICURSOR = 'a:ver25-Cursor'
+
+--- Switch the nvim cursor shape to match the kakoune mode.
+---@param mode string
+function M.apply_cursor_shape(mode)
+  if mode == 'insert' or mode == 'replace' then
+    if orig_guicursor == nil then orig_guicursor = vim.o.guicursor end
+    if vim.o.guicursor ~= BEAM_GUICURSOR then vim.o.guicursor = BEAM_GUICURSOR end
+  elseif orig_guicursor ~= nil then
+    if vim.o.guicursor ~= orig_guicursor then vim.o.guicursor = orig_guicursor end
+    orig_guicursor = nil
+  end
+end
+
+--- Restore the user's original `guicursor` (called from WinLeave /
+--- Session:close / VimLeavePre so non-kak windows keep their shape).
+function M.restore_cursor_shape()
+  if orig_guicursor ~= nil then
+    if vim.o.guicursor ~= orig_guicursor then vim.o.guicursor = orig_guicursor end
+    orig_guicursor = nil
+  end
+end
 return M
