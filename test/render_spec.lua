@@ -251,4 +251,53 @@ describe('statusbar.compose', function()
     end)
     h.eq('', r)
   end)
+
+  it('strips trailing \\n / \\r from atom contents so &statusline has no newlines', function()
+    local r = h.exec_lua(function()
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      return s.compose(
+        { { face = df, contents = ':\n' } },
+        { { { face = df, contents = 'edit foo\n' } } },
+        4,
+        { { face = df, contents = 'NORMAL\n' } },
+        df,
+        'command',
+        faces
+      )
+    end)
+    -- The composed &statusline string must contain NO line terminators
+    -- (Kakoune appends `\n` to atoms; stripping them keeps the cmdline
+    -- visible instead of letting nvim garble the statusline).
+    assert(not r:match('[\r\n]'), 'expected no \\r or \\n in composed statusline, got: ' .. r)
+    -- The visible text content (prompt + typed + mode_line) is preserved.
+    -- The cursor cell at column 4 wraps the space; each atom lives in
+    -- its own hl-group chunk, so the boundaries are `%*%#KakFace_...#`.
+    -- Allow those between visible fragments.
+    local function contains_pieces(s, pieces)
+      local pos = 1
+      for _, p in ipairs(pieces) do
+        local s_esc = (p:gsub('%%', '%%%%')):gsub('([%(%)%.%%%+%-%*%?%[%]%^%$])', '%%%1')
+        -- match the visible fragment OR `%*%#KakFace_...#` (hl-group
+        -- boundary) as a separator; advance past whichever we find.
+        local pat = '()' .. s_esc
+        local pat_at = s:find(pat, pos)
+        local bnd_at = s:find('%%%*%%%#KakFace_%w+#', pos)
+        if pat_at and (not bnd_at or pat_at < bnd_at) then
+          pos = pat_at + #p
+        elseif bnd_at then
+          local _, e = s:find('%%%*%%%#KakFace_%w+#', pos)
+          pos = e + 1
+        else
+          return false
+        end
+      end
+      return true
+    end
+    assert(
+      contains_pieces(r, { ':', 'edit', ' ', 'foo', 'NORMAL' }),
+      'expected ":edit foo" cmdline + NORMAL mode visible, got: ' .. r
+    )
+  end)
 end)

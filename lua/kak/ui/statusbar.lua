@@ -6,6 +6,14 @@ local render = require('kak.ui.render')
 
 local M = {}
 
+--- Strip the `\n`/`\r` line terminators Kakoune appends to atoms so
+--- the composed statusline string never carries literal newlines (which
+--- would garble nvim's `&statusline` render and hide the cmdline text).
+--- Mirrors `render.compose_one_line`.
+---@param text string
+---@return string
+local function clean(text) return (text:gsub('[\r\n]', '')) end
+
 ---@param text string
 ---@return string
 local function esc(text) return (text:gsub('%%', '%%%%')) end
@@ -13,7 +21,7 @@ local function esc(text) return (text:gsub('%%', '%%%%')) end
 ---@param hl string
 ---@param text string
 ---@return string
-local function highlighted(hl, text) return '%#' .. hl .. '#' .. esc(text) .. '%*' end
+local function highlighted(hl, text) return '%#' .. hl .. '#' .. esc(clean(text)) .. '%*' end
 
 ---@param atom kak.ui.protocol.Atom
 ---@param default_face kak.ui.faces.Face?
@@ -66,7 +74,7 @@ function M.compose(prompt, content, cursor_pos, mode_line, default_face, style, 
   local byte = 0
   for _, line in ipairs(content or {}) do
     for _, atom in ipairs(line) do
-      local text = atom.contents or ''
+      local text = clean(atom.contents or '')
       local next_byte = byte + #text
       parts[#parts + 1] = text
       ranges[#ranges + 1] = { atom = atom, b0 = byte, b1 = next_byte }
@@ -80,7 +88,7 @@ function M.compose(prompt, content, cursor_pos, mode_line, default_face, style, 
 
   for _, range in ipairs(ranges) do
     local atom = range.atom
-    local text = atom.contents or ''
+    local text = clean(atom.contents or '')
     if cursor_pos >= 0 and cbyte >= range.b0 and cbyte < range.b1 then
       local rel = cbyte - range.b0
       local char_len = render.codepoint_width(cstr, cbyte)
@@ -117,7 +125,7 @@ function M.render(win, prompt, content, cursor_pos, mode_line, default_face, sty
   local statusline = M.compose(prompt, content, cursor_pos, mode_line, default_face, style, cache)
   if not win or not vim.api.nvim_win_is_valid(win) then return end
   vim.wo[win].statusline = statusline
-  pcall(function() vim.cmd('redrawstatus') end)
+  pcall(vim.api.nvim__redraw, { flush = true })
 end
 
 return M
