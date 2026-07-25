@@ -154,6 +154,34 @@ describe('cursor placement', function()
     h.eq({ 1, 0 }, r.pos)
     h.eq(0, r.cursor_marks)
   end)
+
+  it('nudges the cursor one cell right in insert mode', function()
+    local r = h.exec_lua(function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'abc' })
+      vim.bo[buf].modifiable = false
+      local win = vim.api.nvim_open_win(buf, false, {
+        relative = 'editor',
+        row = 0,
+        col = 0,
+        width = 80,
+        height = 24,
+        style = 'minimal',
+      })
+      local render = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      render:set_buf(buf)
+      render.current_mode = 'insert'
+      render:draw({
+        { { face = nil, contents = 'abc' } },
+      }, { line = 0, column = 1 }, nil, nil)
+      local pos = vim.api.nvim_win_get_cursor(win)
+      pcall(vim.api.nvim_win_close, win, true)
+      return { pos = pos }
+    end)
+    -- column=1 normally lands on byte 1 (`b`); insert mode shifts +1 to byte 2 (`c`).
+    h.eq({ 1, 2 }, r.pos)
+  end)
 end)
 
 describe('statusbar.build_line', function()

@@ -69,12 +69,25 @@ function Handlers:draw_status(raw)
   -- log lines (the error fires through init.lua's on_notify pcall).
   local style = P.check_enum('draw_status', raw[6] or 'status', valid, 6)
   ---@cast style kak.ui.protocol.DrawStyle
+  local mode_line = P.parse_line('draw_status', raw[4], 4)
+  -- Track the active Kakoune mode so `_place_cursor` can nudge the real
+  -- nvim cursor one cell right in insert/replace (the Kakoune cursor sits
+  -- on the just-typed char; we want the block at the insertion point).
+  local mode = 'normal'
+  for _, atom in ipairs(mode_line) do
+    local c = atom.contents
+    if c == 'insert' or c == 'replace' then
+      mode = c
+      break
+    end
+  end
+  self.renderer.current_mode = mode
   require('kak.ui.statusbar').render(
     self.surface,
     prompt,
     content,
     cursor,
-    P.parse_line('draw_status', raw[4], 4),
+    mode_line,
     face,
     style,
     self.faces

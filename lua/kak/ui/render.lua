@@ -16,6 +16,7 @@
 ---@field content_buf integer?
 ---@field set_lines_cache string[]
 ---@field last_cursor kak.ui.render.CursorPos
+---@field current_mode string
 ---@field set_buf fun(self: kak.ui.render.Renderer, buf: integer)
 ---@field draw fun(self: kak.ui.render.Renderer, lines: kak.ui.protocol.Lines, cursor_pos: kak.ui.render.CursorPos?, default_face: kak.ui.faces.Face?, padding_face: kak.ui.faces.Face?)
 ---@field _place_cursor fun(self: kak.ui.render.Renderer, buf: integer, coord: kak.ui.render.CursorPos, face_for_default: kak.ui.faces.Face?)
@@ -143,6 +144,7 @@ function M.new(opts)
     content_buf = nil,
     set_lines_cache = {},
     last_cursor = { line = 0, column = 0 },
+    current_mode = 'normal',
   }, Renderer)
 end
 
@@ -222,7 +224,11 @@ function Renderer:_place_cursor(buf, coord, _face_for_default)
   local row = math.max(0, math.min(coord.line, total - 1))
   local lines = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)
   local line_text = lines[1] or ''
-  local col = column_to_byte(line_text, coord.column)
+  -- In insert/replace the Kakoune cursor sits on the just-typed char;
+  -- nudge one cell right so the real nvim block lands at the insertion
+  -- point instead of covering the char that was just typed.
+  local shift = (self.current_mode == 'insert' or self.current_mode == 'replace') and 1 or 0
+  local col = column_to_byte(line_text, coord.column + shift)
   self.last_cursor = { line = row, column = col }
   local win = vim.fn.bufwinid(buf)
   if win and win > 0 then vim.api.nvim_win_set_cursor(win, { row + 1, col }) end
