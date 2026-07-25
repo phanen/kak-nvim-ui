@@ -22,8 +22,7 @@ describe('real Kakoune integration', function()
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
         if not (#lines >= 3 and lines[1] == 'alpha line') then return false end
-        -- Mode line often arrives a tick later than the content draw,
-        -- so re-check until both are populated.
+        -- Mode line arrives a tick after content draw; poll until set.
         local mode = vim.api.nvim_buf_get_lines(sess.renderer.mode_buf, 0, -1, false)
         local basename = vim.fn.fnamemodify(f, ':t')
         if #mode > 0 and mode[1]:find(basename, 1, true) then
@@ -33,9 +32,9 @@ describe('real Kakoune integration', function()
         return false
       end)
       sess:close()
-      vim.wait(200)
       return got
     end, file)
+    h.sleep(200)
 
     os.remove(file)
     eq('table', type(result))
@@ -68,9 +67,9 @@ describe('real Kakoune integration', function()
         return false
       end)
       sess:close()
-      vim.wait(200)
       return got
     end, file)
+    h.sleep(200)
 
     os.remove(file)
     eq('table', type(result))
@@ -110,7 +109,8 @@ describe('real Kakoune integration', function()
             else
               table.insert(captured.other, { method = method, params = params })
             end
-            -- Bridge handler: once UI bus is up, mount input + buffers
+            -- On first set_ui_options, mount input handler onto our buf
+            -- so subsequent key events have a target.
             if method == 'set_ui_options' and not sess.input then
               local ui = require('kak.ui')
               sess.input = ui and true or true
@@ -120,7 +120,7 @@ describe('real Kakoune integration', function()
               vim.bo[buf].buftype = 'nofile'
               local handler = require('kak.ui.input').new({ rpc = sess })
               handler:enable(buf)
-              -- Make our buf the current buf so the on_key filter passes
+              -- The on_key filter only fires when our buf is current.
               vim.api.nvim_set_current_buf(buf)
             end
           end,
@@ -139,13 +139,12 @@ describe('real Kakoune integration', function()
         return false
       end)
       sess:terminate()
-      vim.wait(200)
       return got
     end, sh_path)
+    h.sleep(200)
 
-    -- Now manually feed ESC through our raw_from_on_key pipeline and
-    -- verify it produces the kak `<esc>` key (i.e. fix is unit-tested
-    -- even if no live input reaches kak in --headless mode).
+    -- Unit-test the raw ESC -> <esc> path directly because headless
+    -- nvim does not deliver real keypresses to our handler.
     local notation_ok = exec_lua(function()
       local m = require('kak.ui.input')
       local raw = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
@@ -156,10 +155,9 @@ describe('real Kakoune integration', function()
 
     os.remove(sh_path)
     os.execute('rm -rf ' .. dir)
-    -- We do not require `result` to be non-nil because nvim-test is
-    -- headless and may not have received a real keypress. The
-    -- important assertions are: spawn did not crash, and our raw-key
-    -- path correctly produces `<esc>`.
+    -- result may be nil if no live keypress ever reached kak in
+    -- --headless mode; the meaningful check is that spawn did not crash
+    -- and the raw-key path above produces `<esc>`.
     eq(true, type(result) == 'table' or type(result) == 'nil')
   end)
 end)
@@ -168,13 +166,19 @@ describe('input handler routing', function()
   before_each(function() h.setup() end)
 
   it('maps mouse events to mouse_press / scroll (not keys)', function()
-    -- Spawn a fake-server shaped like kakoune and verify routing.
+    -- Fake server emits set_ui_options so spawn settles, then sends
+    -- the three mouse notifications. We expect them to reach the
+    -- rpc dispatcher verbatim and never leak into the `keys` path
+    -- (input handler must not call conn:notify('keys', ...) for them).
     local fake = h.write_executable([[
       printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{}]}\n'
+      printf '{"jsonrpc":"2.0","method":"mouse_press","params":["left",1,5]}\n'
+      printf '{"jsonrpc":"2.0","method":"mouse_release","params":["left",1,5]}\n'
+      printf '{"jsonrpc":"2.0","method":"scroll","params":[1,1,0]}\n'
       sleep 5
     ]])
 
-    local seen = exec_lua(function(fake_path)
+    local log = exec_lua(function(fake_path)
       local rpc = require('kak.ui.json_rpc')
       local log = {}
       local conn = rpc.spawn({ fake_path }, {
@@ -185,35 +189,30 @@ describe('input handler routing', function()
           on_error = function() end,
         },
       })
-      -- Wire input handler onto a fresh buf.
       local input = require('kak.ui.input')
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].buftype = 'nofile'
       local handler = input.new({ rpc = conn })
       handler:enable(buf)
-      -- Force a known mouse position so getmousepos() works.
-      pcall(vim.api.nvim_win_set_cursor, 0, { 1, 0 })
-      -- Trigger LeftMouse by calling the handler's mapped function
-      -- directly: we cannot drive mouse via vim.api.nvim_input under
-      -- --headless, but we can simulate the event the handler emits.
-      conn:notify('mouse_press', { 'left', 1, 5 })
-      conn:notify('mouse_release', { 'left', 1, 5 })
-      conn:notify('scroll', { 1, 1, 0 })
-      vim.wait(200)
-      -- Make sure we can disable cleanly.
+      vim.wait(3000, function() return #log >= 4 or conn:is_closing() end)
       handler:disable()
       conn:terminate()
-      vim.wait(200)
       return log
     end, fake)
+    h.sleep(200)
 
     os.remove(fake)
-    -- Verify the path our handler would take is correct: simply that
-    -- the rpc NOTIFY path we use (`mouse_press`, `mouse_release`,
-    -- `scroll`) accepts those calls. We confirm by checking log
-    -- captures doesn't include any `keys` notifications because the
-    -- handler's mapping sends mouse_* not keys.
-    eq(true, type(seen) == 'table')
+    local methods = {}
+    for _, entry in ipairs(log) do
+      methods[#methods + 1] = entry[1]
+    end
+    eq('set_ui_options', methods[1])
+    eq('mouse_press', methods[2])
+    eq('mouse_release', methods[3])
+    eq('scroll', methods[4])
+    for _, m in ipairs(methods) do
+      assert(m ~= 'keys', 'mouse event leaked into keys path: ' .. m)
+    end
   end)
 
   it('cleans up on_key listener on disable', function()
@@ -235,35 +234,28 @@ describe('input handler routing', function()
   end)
 
   it('returns empty string from on_key callback so nvim drops the key', function()
-    -- Per |vim.on_key()|, the callback returning '' tells nvim to
-    -- discard that keypress. This prevents nvim from ALSO acting on
+    -- Per |vim.on_key()|: returning '' from the callback tells nvim to
+    -- discard that keypress. Without this, nvim would also act on
     -- ESC (clear search), `:` (open cmdline), `/` (start search), etc.
     local got = exec_lua(function()
-      local conn = {
-        notify = function() end,
-        is_closing = function() return false end,
-      }
+      local sent = {}
+      local conn = {}
+      conn.is_closing = function() return false end
+      conn.notify = function(self, method, params) sent[#sent + 1] = { method, params } end
       local handler = require('kak.ui.input').new({ rpc = conn })
       local buf = vim.api.nvim_create_buf(false, true)
       vim.bo[buf].buftype = 'nofile'
       handler:enable(buf)
-      -- Drive the on_key callback directly with an ESC byte.
-      local ns_id = handler.on_key_ns
       vim.api.nvim_set_current_buf(buf)
       -- <Esc> arrives as a single \27 byte.
-      local cb = handler.on_key_fn
-      -- Re-register the callback via vim.on_key so we can query its
-      -- return value (re-using the original callback's logical body).
-      -- The captured return path is verified through vim.on_key's
-      -- contract by checking that we discarded the call.
-      local fn_called = false
-      vim.on_key(function() fn_called = true end, vim.api.nvim_create_namespace('sentinel'))
-      -- Re-routing: switch to the handler's named callback.
-      local ok, ret = pcall(cb, '\27', '\27')
+      local ret = handler.on_key_fn('', '\27')
       handler:disable()
-      return { ok = ok, called_via_wrapper = fn_called }
+      return { ret = ret, sent = sent }
     end)
-    eq(true, got.ok)
+    eq('', got.ret)
+    eq(1, #got.sent)
+    eq('keys', got.sent[1][1])
+    eq('<esc>', got.sent[1][2][1])
   end)
 end)
 

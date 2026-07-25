@@ -329,11 +329,11 @@ describe('end-to-end rpc over uv pipe', function()
         })
         vim.wait(3000, function() return recv ~= 'unset' or conn:is_closing() end)
         conn:terminate()
-        vim.wait(100)
         return recv
       end, fake_path)
     end)
     os.remove(fake_path)
+    h.sleep(100)
     h.eq(true, ok)
     h.eq('table', type(recv))
     if type(recv) == 'table' then h.eq('bar', recv[1] and recv[1].foo) end

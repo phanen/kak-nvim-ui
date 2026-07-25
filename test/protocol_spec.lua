@@ -1,7 +1,4 @@
 -- Tests for the Kakoune JSON-UI protocol decoder.
--- Uses `exec_lua(fn)` form so we pass a Lua function rather than a
--- serialized string. nvim-test supports passing a function and
--- captures simple return values.
 
 local h = require('test.helpers')
 
