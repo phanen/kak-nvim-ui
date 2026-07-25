@@ -88,7 +88,7 @@ The current session is reused; the new window hosts a fresh json-ui client via k
 
     define-command nvim-terminal-vertical -params 1.. -docstring '
 nvim-terminal-vertical <program> [<arguments>]: open <program> as a vertical split in the running nvim
-The current session is reused; the new window hosts a fresh json-ui client via kak-nnou-ui' \
+The current session is reused; the new window hosts a fresh json-ui client via kak-nvim-ui' \
     %{
         evaluate-commands %sh{
             listen="$kak_client_env_KAK_NVIM_LISTEN"
