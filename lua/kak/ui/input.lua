@@ -245,19 +245,18 @@ function Handler:enable(buf)
     map(lhs, send_mouse_event(lhs))
   end
 
-  if vim.paste then
-    self.paste_orig = vim.paste
-    vim.paste = function(lines, phase)
-      if phase == -1 or phase == 3 then
-        for _, line in ipairs(lines) do
-          pcall(handler.rpc.notify, handler.rpc, 'paste', { line })
-        end
-        return true
-      end
-      if self.paste_orig then return self.paste_orig(lines, phase) end
-      return false
+  self.paste_orig = vim.paste
+  vim.paste = function(lines, phase)
+    if vim.api.nvim_get_current_buf() ~= handler.buf then
+      return handler.paste_orig and handler.paste_orig(lines, phase) or false
     end
-    pcall(vim.api.nvim_buf_set_var, buf, 'kak_ui_paste', true)
+    if phase == -1 or phase == 3 then
+      for _, line in ipairs(lines) do
+        pcall(handler.rpc.notify, handler.rpc, 'paste', { line })
+      end
+      return true
+    end
+    return handler.paste_orig and handler.paste_orig(lines, phase) or false
   end
 end
 
@@ -273,9 +272,6 @@ function Handler:disable()
     pcall(vim.keymap.del, { 'n', 'o', 'v', 'x' }, lhs, { buffer = self.buf })
   end
   self.mouse_maps = {}
-  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
-    pcall(vim.api.nvim_buf_del_var, self.buf, 'kak_ui_paste')
-  end
   self.buf = nil
 end
 
