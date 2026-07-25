@@ -108,11 +108,11 @@ describe('real Kakoune integration', function()
   end)
 
   it('forwards ESC key to kakoune, exiting insert-like mode', function()
-    -- Wrap kak with a tee to record wire bytes; kak.ui.open has
-    -- already mounted an input handler on the scratch buffer.
+    -- The plugin logger routes stderr + json-rpc events to wire_log
+    -- when the env override is set; assert_log proves spawn settled.
     local dir = h.fn.tempname()
     h.fn.mkdir(dir, 'p')
-    local log = dir .. '/log.txt'
+    local log = dir .. '/kak-ui.log'
     finally(function() h.rmdir(dir) end)
 
     local spawned = h.with_kak_session({
@@ -122,6 +122,8 @@ describe('real Kakoune integration', function()
       vim.wait(3000, function() return sess.conn:is_closing() end)
       return true
     end)
+
+    h.assert_log('subprocess exit', log)
 
     -- Headless nvim cannot deliver real keypresses to our handler,
     -- so unit-test the raw ESC -> <esc> translation directly. The
@@ -213,6 +215,39 @@ describe('input handler routing', function()
     eq(1, #got.sent)
     eq('keys', got.sent[1][1])
     eq('<esc>', got.sent[1][2][1])
+  end)
+end)
+
+describe('plugin logger routing', function()
+  before_each(function() h.setup() end)
+
+  it('captures rpc stderr through the plugin logger', function()
+    -- Fake process writes to stderr, which goes through
+    -- json_rpc.lua:on_stderr -> log.error -> the env-overridden file.
+    local dir = h.fn.tempname()
+    h.fn.mkdir(dir, 'p')
+    local log = dir .. '/kak-ui.log'
+    finally(function() h.rmdir(dir) end)
+
+    h.with_fake_kak_server(
+      [[
+      io.stderr:write('FAKE-STDERR-MARKER\n')
+      io.stderr:flush()
+      fake.notify('set_ui_options', {{}})
+      fake.sleep(500)
+      fake.exit(0)
+    ]],
+      { wire_log = log },
+      function(_, captured)
+        vim.wait(2000, function() return #captured >= 1 end)
+        return #captured
+      end
+    )
+
+    -- The same file holds both the plugin logger output and the
+    -- fake process's wire capture. Either side or both could match.
+    h.assert_log('rpc.stderr', log)
+    h.assert_log('FAKE%-STDERR%-MARKER', log)
   end)
 end)
 

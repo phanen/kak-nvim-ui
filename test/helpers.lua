@@ -1,9 +1,16 @@
 -- Test helpers. Re-exports nvim-test's and adds:
---   write_file / write_wire_logged - tmp scripts/files
+--   write_file - tmp data file
 --   with_kak_session - spawn real kak -ui json and run a body in the child
 --   with_fake_kak_server - structured Lua spec for fake-kak-server fixture
 --   with_screen - attach a Screen for screen:expect / snapshot_util
 --   rmdir - safe recursive delete (replaces `rm -rf` shell patterns)
+--   assert_log / assert_nolog - match patterns in the plugin log file
+--
+-- Wire logging no longer goes through a shell wrapper. The plugin's
+-- own logger is file-backed (lua/kak/ui/log.lua) and reads
+-- $KAK_UI_LOG_FILE / $KAK_UI_LOG_LEVEL at process start. Tests
+-- forward those env vars into the child nvim (or fake-kak-server)
+-- and then `assert_log(pat, logfile)` against the resulting file.
 
 local helpers = require('nvim-test.helpers')
 
@@ -18,20 +25,6 @@ function M.setup()
   exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
 end
 
---- Write `body` to a tmp file and chmod 755. Caller removes with os.remove.
---- Internal helper for `write_wire_logged` and `with_fake_kak_server`
---- wrapper shell scripts; not exposed on the helpers table.
---- @param body string
---- @return string path
-local function write_tmp_exe(body)
-  local path = M.fn.tempname()
-  local f = assert(io.open(path, 'w'))
-  f:write(body)
-  f:close()
-  assert(vim.uv.fs_chmod(path, tonumber('755', 8)))
-  return path
-end
-
 --- Write `lines` joined by `\n` to a tmp file. Caller removes with os.remove.
 --- @param lines string[]
 --- @return string path
@@ -44,21 +37,15 @@ function M.write_file(lines)
   return path
 end
 
---- Write a wrapper that exec's `cmd` while teeing its stdout/stderr to
---- `wire_log`. `cmd` is shell-quoted (e.g. '/usr/bin/kak -ui json').
---- @param cmd string
---- @param wire_log string
---- @return string path
-function M.write_wire_logged(cmd, wire_log)
-  return write_tmp_exe(
-    '#!/bin/sh\nexec '
-      .. cmd
-      .. ' "$@" 2>> '
-      .. wire_log
-      .. ' | tee -a '
-      .. wire_log
-      .. ' >/dev/null\n'
-  )
+--- Truncate `logfile` (creating it if missing) so the next test
+--- starts with a clean tail. `with_kak_session` and
+--- `with_fake_kak_server` call this when `wire_log` is set.
+--- @param logfile string
+local function truncate_log(logfile)
+  local dir = M.fn.fnamemodify(logfile, ':h')
+  if dir and dir ~= '' and dir ~= '.' then M.fn.mkdir(dir, 'p') end
+  local f = assert(io.open(logfile, 'w'))
+  f:close()
 end
 
 --- Spawn real `kak -ui json` and run `body(sess, ...)` in the child.
@@ -66,35 +53,38 @@ end
 --- Extra args are forwarded through the rpc layer (Lua closures do
 --- not survive `string.dump` and would be nil in the child).
 --- Drains 200 ms after body returns.
+---
+--- When `opts.wire_log` is set, the child nvim's plugin logger is
+--- redirected to that path at DEBUG level BEFORE `kak.ui` is
+--- required, so log.lua picks up the override at module load time.
+--- Use `assert_log` to inspect what the child wrote.
 --- @param opts { cmd?: string[], extra_args?: string[], wire_log?: string }
 --- @param body fun(sess: any, ...): any
 --- @return any
 function M.with_kak_session(opts, body, ...)
   local cmd = opts.cmd or { 'kak' }
   local extra_args = opts.extra_args or {}
-  local wire_path
-  if opts.wire_log then
-    wire_path = M.write_wire_logged(
-      table.concat(cmd, ' ') .. ' ' .. table.concat(extra_args, ' '),
-      opts.wire_log
-    )
-    cmd = { wire_path }
-    extra_args = {}
-  end
+
+  if opts.wire_log then truncate_log(opts.wire_log) end
 
   -- pcall so internal cleanup runs even if body throws inside the child.
   -- busted's `finally()` resolves via the test's _ENV, so it cannot be
   -- used from this module-level helper.
-  local ok, result = pcall(exec_lua, function(cmd, extra_args, body_src, ...)
+  -- `wire_log` defaults to '' so exec_lua packs a dense args array even
+  -- when the test does not request wire capture.
+  local ok, result = pcall(exec_lua, function(cmd, extra_args, wire_log, body_src, ...)
+    if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
+      vim.env.KAK_UI_LOG_FILE = wire_log
+      vim.env.KAK_UI_LOG_LEVEL = 'DEBUG'
+    end
     local body = assert(loadstring(body_src))
     local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
     local got = body(sess, ...)
     sess:close()
     return got
-  end, cmd, extra_args, string.dump(body), ...)
+  end, cmd, extra_args, opts.wire_log or '', string.dump(body), ...)
 
   M.sleep(200)
-  if wire_path then os.remove(wire_path) end
   if not ok then error(result) end
   return result
 end
@@ -150,12 +140,12 @@ function M.fake_kak_nvim_path() return os.getenv('NVIM_PRG') or M.fn.exepath('nv
 ---   fake.sleep(ms)
 ---   fake.exit(code)
 ---
---- Replaces the old shell-script `with_fake_kak`: the spec drives the
---- wire through structured tables instead of hand-written JSON strings.
 --- See `test/fixtures/fake-kak-server.lua`.
 ---
---- `opts.wire_log` mirrors `with_kak_session`; the fixture writes every
---- inbound/outbound frame to it via the `FAKE_KAK_WIRE_LOG` env var.
+--- `opts.wire_log` controls two parallel streams via env vars:
+---   KAK_UI_LOG_FILE  -> child's plugin logger (json rpc + stderr)
+---   FAKE_KAK_WIRE_LOG -> fake process's own wire capture
+--- Both can be set to the same path or different paths.
 ---
 --- @param spec_lua_src string
 --- @param opts? { wire_log?: string }
@@ -171,10 +161,9 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
   local forward = { ... }
   local n_forward = select('#', ...)
 
-  -- Spec is a plain Lua source file loaded by `nvim -l`; it does not
-  -- need the executable bit, so skip the wrapper script and pass the
-  -- argv directly to vim.system. Same for env: forwarded through
-  -- `opts.env` on rpc.spawn instead of prefixed in a shell wrapper.
+  -- Spec is a plain Lua source file loaded by `nvim -l`; no +x bit
+  -- needed, so skip the wrapper script and pass argv directly to
+  -- vim.system. Env is forwarded via rpc.spawn opts.
   local spec_path = M.fn.tempname()
   local spec_f = assert(io.open(spec_path, 'w'))
   spec_f:write(spec_lua_src)
@@ -183,15 +172,25 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
   local fixture = M.fake_kak_fixture_path()
   local nvim_path = M.fake_kak_nvim_path()
   local cmd = { nvim_path, '-l', fixture, spec_path }
-  -- Keep env a table (never nil) so exec_lua packs the variadic args
-  -- as a dense array; nvim_exec_lua rejects sparse arrays. The child
-  -- decides whether to forward env to vim.system based on emptiness.
+  -- Two parallel wire streams: child's plugin logger (json rpc,
+  -- stderr) and fake process's own wire capture. Both write to
+  -- `wire_log`. We always pass env so the child exec_lua packing
+  -- stays dense even when no wire_log is set.
   local env = {}
-  if opts.wire_log then env = { FAKE_KAK_WIRE_LOG = opts.wire_log } end
+  if opts.wire_log then
+    truncate_log(opts.wire_log)
+    env.FAKE_KAK_WIRE_LOG = opts.wire_log
+  end
 
   local result
   local ok, err = pcall(function()
-    result = exec_lua(function(cmd, env, body_src, fwd, n_fwd)
+    result = exec_lua(function(cmd, env, wire_log, body_src, fwd, n_fwd)
+      -- Set the child's plugin logger BEFORE requiring the plugin,
+      -- so log.lua picks up the override at module load time.
+      if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
+        vim.env.KAK_UI_LOG_FILE = wire_log
+        vim.env.KAK_UI_LOG_LEVEL = 'DEBUG'
+      end
       local body = assert(loadstring(body_src))
       local rpc = require('kak.ui.json_rpc')
       local captured = {}
@@ -213,13 +212,111 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
       local got = body(sess, captured, unpack(fwd, 1, n_fwd))
       sess:terminate()
       return got
-    end, cmd, env, string.dump(body), forward, n_forward)
+    end, cmd, env, opts.wire_log or '', string.dump(body), forward, n_forward)
   end)
 
   M.sleep(200)
   os.remove(spec_path)
   if not ok then error(err) end
   return result
+end
+
+--- Resolve the log file path. Defaults to `$KAK_UI_LOG_FILE` when
+--- set in the test runner's env, otherwise
+--- `<stdpath('log')>/kak-ui.log` (matches what the child nvim would
+--- pick). `assert_log` defaults to this when `logfile` is omitted.
+--- @param logfile? string
+--- @return string
+function M.default_log_path(logfile)
+  if logfile and logfile ~= '' then return logfile end
+  local env = os.getenv('KAK_UI_LOG_FILE')
+  if env and env ~= '' then return env end
+  return M.fn.stdpath('log') .. '/kak-ui.log'
+end
+
+--- Read up to `nrlines` trailing lines from `logfile`. Tolerates a
+--- missing file (returns an empty list) and trims to the last
+--- 2 MB to avoid blowing up on long-running tests.
+--- @param logfile string
+--- @param nrlines integer
+--- @return string[]
+local function read_log_tail(logfile, nrlines)
+  local f = io.open(logfile, 'r')
+  if not f then return {} end
+  local size = f:seek('end')
+  local offset = size and (size - 2000000) or 0
+  if offset < 0 then offset = 0 end
+  f:seek('set', offset)
+  local content = f:read('*a') or ''
+  f:close()
+  local lines = vim.split(content, '\n', { plain = true })
+  if #lines > nrlines then
+    local out = {}
+    for i = #lines - nrlines + 1, #lines do
+      out[#out + 1] = lines[i]
+    end
+    return out
+  end
+  return lines
+end
+
+--- Assert that `pat` matches at least one line in the tail of
+--- `logfile`. Retries for up to ~1 s so writes that haven't been
+--- flushed yet still satisfy the assertion. See neovim
+--- `testutil.lua:assert_log` for the original pattern.
+--- @param pat string Lua pattern (passed to `string.match`)
+--- @param logfile? string Default: `default_log_path()`
+--- @param nrlines? integer Tail size, default 10
+function M.assert_log(pat, logfile, nrlines)
+  logfile = M.default_log_path(logfile)
+  nrlines = nrlines or 10
+  local hrtime = vim.uv and vim.uv.hrtime or os.clock
+  local deadline = hrtime() + 1e9
+  local matched_lines
+  while true do
+    local lines = read_log_tail(logfile, nrlines)
+    matched_lines = lines
+    for _, line in ipairs(lines) do
+      if line:match(pat) then return true end
+    end
+    if hrtime() > deadline then break end
+    M.sleep(50)
+  end
+  error(string.format(
+    'pattern %s not found in last %d lines of %q:\n%s',
+    vim.inspect(pat),
+    nrlines,
+    logfile,
+    table.concat(matched_lines or {}, '\n')
+  ))
+end
+
+--- Assert that `pat` does NOT match any line in the tail of
+--- `logfile`. Same retry behaviour as `assert_log`.
+--- @param pat string Lua pattern
+--- @param logfile? string
+--- @param nrlines? integer
+function M.assert_nolog(pat, logfile, nrlines)
+  logfile = M.default_log_path(logfile)
+  nrlines = nrlines or 10
+  local hrtime = vim.uv and vim.uv.hrtime or os.clock
+  local deadline = hrtime() + 1e9
+  while true do
+    local lines = read_log_tail(logfile, nrlines)
+    for _, line in ipairs(lines) do
+      if line:match(pat) then
+        error(string.format(
+          'pattern %s unexpectedly found in last %d lines of %q:\n%s',
+          vim.inspect(pat),
+          nrlines,
+          logfile,
+          table.concat(lines, '\n')
+        ))
+      end
+    end
+    if hrtime() > deadline then return true end
+    M.sleep(50)
+  end
 end
 
 return M
