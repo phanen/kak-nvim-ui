@@ -1,5 +1,5 @@
 -- Test helpers. Re-exports nvim-test's and adds:
---   write_executable / write_file / write_wire_logged - tmp scripts/files
+--   write_file / write_wire_logged - tmp scripts/files
 --   with_kak_session - spawn real kak -ui json and run a body in the child
 --   with_fake_kak_server - structured Lua spec for fake-kak-server fixture
 --   with_screen - attach a Screen for screen:expect / snapshot_util
@@ -19,9 +19,11 @@ function M.setup()
 end
 
 --- Write `body` to a tmp file and chmod 755. Caller removes with os.remove.
+--- Internal helper for `write_wire_logged` and `with_fake_kak_server`
+--- wrapper shell scripts; not exposed on the helpers table.
 --- @param body string
 --- @return string path
-function M.write_executable(body)
+local function write_tmp_exe(body)
   local path = M.fn.tempname()
   local f = assert(io.open(path, 'w'))
   f:write(body)
@@ -48,7 +50,7 @@ end
 --- @param wire_log string
 --- @return string path
 function M.write_wire_logged(cmd, wire_log)
-  return M.write_executable(
+  return write_tmp_exe(
     '#!/bin/sh\nexec '
       .. cmd
       .. ' "$@" 2>> '
@@ -178,7 +180,7 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
   local nvim_path = M.fake_kak_nvim_path()
   local prefix = ''
   if opts.wire_log then prefix = 'FAKE_KAK_WIRE_LOG=' .. opts.wire_log .. ' ' end
-  local wrapper = M.write_executable(
+  local wrapper = write_tmp_exe(
     '#!/bin/sh\n'
       .. prefix
       .. "exec '"

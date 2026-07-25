@@ -589,34 +589,23 @@ describe('end-to-end rpc over uv pipe', function()
   before_each(function() end)
 
   it('round-trips a notification from fake-server', function()
-    local fake_path = h.write_executable([[
-      printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{"foo":"bar"}]}\n'
-      sleep 5
-    ]])
-    finally(function() os.remove(fake_path) end)
-
-    local ok, recv = pcall(function()
-      return h.exec_lua(function(fake)
-        local rpc = require('kak.ui.json_rpc')
-        local recv = 'unset'
-        local conn = rpc.spawn({ fake }, {
-          log_level = 'error',
-          dispatchers = {
-            on_notify = function(method, params)
-              if method == 'set_ui_options' then recv = params end
-            end,
-            on_request = function() end,
-            on_exit = function() end,
-            on_error = function() end,
-          },
-        })
-        vim.wait(3000, function() return recv ~= 'unset' or conn:is_closing() end)
-        conn:terminate()
-        return recv
-      end, fake_path)
-    end)
-    h.sleep(100)
-    h.eq(true, ok)
+    local recv = h.with_fake_kak_server(
+      [[
+      fake.notify('set_ui_options', {{foo='bar'}})
+      fake.sleep(5000)
+    ]],
+      function(_, captured)
+        local got = 'unset'
+        vim.wait(3000, function()
+          if captured[1] then
+            got = captured[1][2]
+            return true
+          end
+          return false
+        end)
+        return got
+      end
+    )
     h.eq('table', type(recv))
     if type(recv) == 'table' then h.eq('bar', recv[1] and recv[1].foo) end
   end)
