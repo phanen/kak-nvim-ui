@@ -335,6 +335,15 @@ function M.open(opts)
       log.debug('close: survivor', { id = survivor and survivor.id })
       self.closed = true
       if self.conn and not self.conn:is_closing() then self.conn:terminate() end
+      -- Drop any open menu/info popups BEFORE the surface tears down
+      -- the content window. A `relative='win'` float whose anchor
+      -- window is closed becomes orphaned -- nvim re-homes it to
+      -- `relative='editor'` at its last screen coords, so the dead
+      -- session's completion menu / info box sticks on screen and
+      -- appears inside a sibling (survivor) window after `:q`.
+      if self.handlers and self.handlers.popups then
+        pcall(function() self.handlers.popups:close() end)
+      end
       if self.surface then
         self.surface.rpc = nil
         self.surface:close()
