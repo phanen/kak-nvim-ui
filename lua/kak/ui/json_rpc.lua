@@ -154,9 +154,9 @@ function Transport:listen(on_data, on_exit)
     if self.extra.env then spawn_opts.env = self.extra.env end
   end
 
-  local ok, sysobj_or_err = pcall(vim.system, self.cmd, spawn_opts, function(obj)
-    log.info('subprocess exit', { code = obj:wait().code, signal = obj:wait().signal })
-    if self.on_exit_cb then self.on_exit_cb(obj:wait().code, obj:wait().signal) end
+  local ok, sysobj_or_err = pcall(vim.system, self.cmd, spawn_opts, function(out)
+    log.info('subprocess exit', { code = out.code, signal = out.signal })
+    if self.on_exit_cb then self.on_exit_cb(out.code, out.signal) end
   end)
 
   if not ok then
