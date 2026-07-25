@@ -7,10 +7,66 @@
 --- Lifecycle: `menu_show` / `info_show` create a window, `*_select` updates
 --- the highlighted entry, `*_hide` closes the window.
 
+---@alias kak.ui.popups.MenuKind
+---| 'float'
+---| 'inline'
+
+---@alias kak.ui.popups.InfoKind
+---| 'float'
+---| 'inline'
+
+---@class kak.ui.popups.MenuStateBase
+---@field items kak.ui.protocol.Lines
+---@field fg kak.ui.faces.Face?
+---@field bg kak.ui.faces.Face?
+---@field style kak.ui.protocol.MenuStyle
+---@field selected integer
+
+---@class kak.ui.popups.MenuStateFloat : kak.ui.popups.MenuStateBase
+---@field kind 'float'
+---@field buf integer
+---@field win integer
+---@field anchor kak.ui.protocol.Coord
+
+---@class kak.ui.popups.MenuStateInline : kak.ui.popups.MenuStateBase
+---@field kind 'inline'
+---@field anchor kak.ui.protocol.Coord?
+
+---@alias kak.ui.popups.MenuState kak.ui.popups.MenuStateFloat|kak.ui.popups.MenuStateInline
+
+---@class kak.ui.popups.InfoStateBase
+---@field style kak.ui.protocol.InfoStyle
+
+---@class kak.ui.popups.InfoStateFloat : kak.ui.popups.InfoStateBase
+---@field kind 'float'
+---@field buf integer
+---@field win integer
+
+---@class kak.ui.popups.InfoStateInline : kak.ui.popups.InfoStateBase
+---@field kind 'inline'
+---@field row integer
+---@field col integer
+
+---@alias kak.ui.popups.InfoState kak.ui.popups.InfoStateFloat|kak.ui.popups.InfoStateInline
+
+---@class kak.ui.popups.Manager
+---@field faces kak.ui.faces.Cache
+---@field renderer kak.ui.render.Renderer
+---@field menu_state kak.ui.popups.MenuState?
+---@field info_state kak.ui.popups.InfoState?
+---@field float_ns integer
+---@field menu_show fun(self: kak.ui.popups.Manager, items: kak.ui.protocol.Lines, anchor: kak.ui.protocol.Coord, fg: kak.ui.faces.Face?, bg: kak.ui.faces.Face?, style: kak.ui.protocol.MenuStyle)
+---@field menu_select fun(self: kak.ui.popups.Manager, selected: integer)
+---@field menu_hide fun(self: kak.ui.popups.Manager)
+---@field info_show fun(self: kak.ui.popups.Manager, title: kak.ui.protocol.Line, content: kak.ui.protocol.Lines, anchor: kak.ui.protocol.Coord, face: kak.ui.faces.Face?, style: kak.ui.protocol.InfoStyle)
+---@field info_hide fun(self: kak.ui.popups.Manager)
+
 local M = {}
 
 local INLINE_MAX_ITEMS = 12
 
+---@param line kak.ui.protocol.Line
+---@return string
 local function line_to_text(line)
   local parts = {}
   for _, atom in ipairs(line) do
@@ -19,10 +75,11 @@ local function line_to_text(line)
   return table.concat(parts)
 end
 
---- @class kak.ui.popups.Manager
 local Manager = {}
 Manager.__index = Manager
 
+---@param opts { faces: kak.ui.faces.Cache, renderer: kak.ui.render.Renderer }
+---@return kak.ui.popups.Manager
 function M.new(opts)
   return setmetatable({
     faces = opts.faces,
@@ -33,6 +90,12 @@ function M.new(opts)
   }, Manager)
 end
 
+---@param items kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param fg kak.ui.faces.Face?
+---@param bg kak.ui.faces.Face?
+---@param style kak.ui.protocol.MenuStyle
+---@return kak.ui.popups.MenuKind
 function Manager:_show_menu(items, anchor, fg, bg, style)
   self:menu_hide()
 
@@ -42,8 +105,15 @@ function Manager:_show_menu(items, anchor, fg, bg, style)
   return self:_show_menu_inline(items, anchor, fg, bg, style)
 end
 
+---@param items kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param fg kak.ui.faces.Face?
+---@param bg kak.ui.faces.Face?
+---@param style kak.ui.protocol.MenuStyle
+---@return kak.ui.popups.MenuKind
 function Manager:_show_menu_float(items, anchor, fg, bg, style)
-  if not self.renderer or not self.renderer.content_buf then return 'float' end
+  local renderer = self.renderer
+  if not renderer or not renderer.content_buf then return 'float' end
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
   local lines = {}
@@ -64,20 +134,29 @@ function Manager:_show_menu_float(items, anchor, fg, bg, style)
 
   -- `prompt` sits at the bottom of the editor (completion menu); everything
   -- else floats just below the matched row.
-  local win_anchor, row, col
+  local win_anchor
+  local row
+  local col
   if style == 'prompt' then
     win_anchor = 'SW'
     row = editor_h
     col = math.max(0, math.floor(editor_w / 2))
   else
     win_anchor = 'NW'
-    local total = vim.api.nvim_buf_line_count(self.renderer.content_buf)
+    local total = vim.api.nvim_buf_line_count(renderer.content_buf)
     local base = math.max(0, math.min(anchor.line, total - 1))
     local row_offset = style == 'search' and 1 or 0
+    ---@cast base integer
+    ---@cast editor_h integer
+    ---@cast row_offset integer
+    ---@cast win_h integer
     row = math.max(0, math.min(base + 1 + row_offset, editor_h - win_h - 2))
     col = 0
   end
+  ---@cast row integer
+  ---@cast col integer
 
+  ---@type vim.api.keyset.win_config
   local config = {
     relative = 'editor',
     anchor = win_anchor,
@@ -107,13 +186,22 @@ function Manager:_show_menu_float(items, anchor, fg, bg, style)
   return 'float'
 end
 
+---@param items kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param fg kak.ui.faces.Face?
+---@param bg kak.ui.faces.Face?
+---@param style kak.ui.protocol.MenuStyle
+---@return kak.ui.popups.MenuKind
 function Manager:_show_menu_inline(items, anchor, fg, bg, style)
-  if not self.renderer or not self.renderer.content_buf then return 'inline' end
+  local renderer = self.renderer
+  if not renderer or not renderer.content_buf then return 'inline' end
   local lines = {}
   for _, item in ipairs(items) do
     lines[#lines + 1] = line_to_text(item)
   end
-  self.menu_state = {
+  ---@cast self.menu_state -nil
+  ---@type kak.ui.popups.MenuStateInline
+  local inline_state = {
     kind = 'inline',
     items = items,
     fg = fg,
@@ -122,9 +210,12 @@ function Manager:_show_menu_inline(items, anchor, fg, bg, style)
     selected = -1,
     style = style,
   }
-  local buf = self.renderer.content_buf
+  self.menu_state = inline_state
+  local buf = renderer.content_buf
   local total = vim.api.nvim_buf_line_count(buf)
+  ---@cast anchor.line integer
   local row = math.max(0, math.min(anchor.line, total - 1))
+  ---@cast row integer
   vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
   local bg_hl = self.faces:get(bg)
   for i, line in ipairs(lines) do
@@ -139,19 +230,25 @@ function Manager:_show_menu_inline(items, anchor, fg, bg, style)
   return 'inline'
 end
 
+---@param items kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param fg kak.ui.faces.Face?
+---@param bg kak.ui.faces.Face?
+---@param style kak.ui.protocol.MenuStyle
 function Manager:menu_show(items, anchor, fg, bg, style)
-  return self:_show_menu(items, anchor, fg, bg, style)
+  self:_show_menu(items, anchor, fg, bg, style)
 end
 
+---@param selected integer
 function Manager:menu_select(selected)
-  if not self.menu_state then return end
-  self.menu_state.selected = selected
-  if self.menu_state.kind == 'float' then
-    local buf = self.menu_state.buf
+  local state = self.menu_state
+  if not state then return end
+  state.selected = selected
+  if state.kind == 'float' then
+    local buf = state.buf
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
-    for i, item in ipairs(self.menu_state.items) do
-      local hl = (i == selected + 1) and self.faces:get(self.menu_state.fg)
-        or self.faces:get(self.menu_state.bg)
+    for i, item in ipairs(state.items) do
+      local hl = (i == selected + 1) and self.faces:get(state.fg) or self.faces:get(state.bg)
       vim.api.nvim_buf_set_extmark(
         buf,
         self.float_ns,
@@ -161,15 +258,17 @@ function Manager:menu_select(selected)
       )
     end
   else
-    local buf = self.renderer.content_buf
+    local renderer = self.renderer
+    if not renderer or not renderer.content_buf then return end
+    local buf = renderer.content_buf
     local total = vim.api.nvim_buf_line_count(buf)
-    local anchor = self.menu_state.anchor or { line = 0, column = 0 }
+    local anchor = state.anchor or { line = 0, column = 0 }
     local row = math.max(0, math.min(anchor.line, total - 1))
+    ---@cast row integer
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
-    for i, item in ipairs(self.menu_state.items) do
+    for i, item in ipairs(state.items) do
       local line = line_to_text(item)
-      local hl = (i == selected + 1) and self.faces:get(self.menu_state.fg)
-        or self.faces:get(self.menu_state.bg)
+      local hl = (i == selected + 1) and self.faces:get(state.fg) or self.faces:get(state.bg)
       vim.api.nvim_buf_set_extmark(buf, self.float_ns, row, anchor.column or 0, {
         virt_text = { { line, hl } },
         virt_text_pos = 'eol',
@@ -182,36 +281,42 @@ function Manager:menu_select(selected)
 end
 
 function Manager:menu_hide()
-  if not self.menu_state then return end
-  if
-    self.menu_state.kind == 'float'
-    and self.menu_state.win
-    and vim.api.nvim_win_is_valid(self.menu_state.win)
-  then
-    pcall(vim.api.nvim_win_close, self.menu_state.win, true)
+  local state = self.menu_state
+  if not state then return end
+  if state.kind == 'float' and state.win and vim.api.nvim_win_is_valid(state.win) then
+    pcall(vim.api.nvim_win_close, state.win, true)
   end
-  if
-    self.renderer
-    and self.renderer.content_buf
-    and vim.api.nvim_buf_is_valid(self.renderer.content_buf)
-  then
-    vim.api.nvim_buf_clear_namespace(self.renderer.content_buf, self.float_ns, 0, -1)
+  local renderer = self.renderer
+  if renderer and renderer.content_buf and vim.api.nvim_buf_is_valid(renderer.content_buf) then
+    vim.api.nvim_buf_clear_namespace(renderer.content_buf, self.float_ns, 0, -1)
   end
   self.menu_state = nil
 end
 
+---@param title kak.ui.protocol.Line
+---@param content kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param face kak.ui.faces.Face?
+---@param style kak.ui.protocol.InfoStyle
 function Manager:info_show(title, content, anchor, face, style)
   self:info_hide()
 
   if style == 'inline' or style == 'inlineAbove' or style == 'inlineBelow' then
-    return self:_info_inline(title, content, anchor, face, style)
+    self:_info_inline(title, content, anchor, face, style)
+    return
   end
   if style == 'prompt' or style == 'modal' or style == 'menuDoc' then
-    return self:_info_float(title, content, anchor, face, style)
+    self:_info_float(title, content, anchor, face, style)
+    return
   end
-  return 'unknown'
 end
 
+---@param title kak.ui.protocol.Line
+---@param content kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param face kak.ui.faces.Face?
+---@param style kak.ui.protocol.InfoStyle
+---@return kak.ui.popups.InfoKind
 function Manager:_info_float(title, content, anchor, face, style)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
@@ -232,17 +337,23 @@ function Manager:_info_float(title, content, anchor, face, style)
   local width = math.min(maxw + 2, math.max(20, math.floor(editor_w / 2)))
   local height = math.min(#lines, math.max(5, math.floor(editor_h / 3)))
 
-  local win_anchor, row, col
+  local win_anchor
+  local row
+  local col
   if style == 'modal' then
     win_anchor = 'NW'
     row = math.max(0, math.floor((editor_h - height) / 2) - 1)
     col = math.max(0, math.floor((editor_w - width) / 2))
   elseif style == 'menuDoc' then
-    local total = (self.renderer and self.renderer.content_buf)
-        and vim.api.nvim_buf_line_count(self.renderer.content_buf)
+    local renderer = self.renderer
+    local total = (renderer and renderer.content_buf)
+        and vim.api.nvim_buf_line_count(renderer.content_buf)
       or editor_h
     local menu_row = anchor and anchor.line or 0
     local base = math.max(0, math.min(menu_row, total - 1))
+    ---@cast base integer
+    ---@cast editor_h integer
+    ---@cast height integer
     win_anchor = 'NE'
     row = math.min(base + 1, editor_h - height - 2)
     col = editor_w
@@ -254,8 +365,11 @@ function Manager:_info_float(title, content, anchor, face, style)
     row = editor_h
     col = editor_w
   end
+  ---@cast row integer
+  ---@cast col integer
 
   local hl = self.faces:get(face)
+  ---@type vim.api.keyset.win_config
   local config = {
     relative = 'editor',
     anchor = win_anchor,
@@ -274,16 +388,27 @@ function Manager:_info_float(title, content, anchor, face, style)
   return 'float'
 end
 
+---@param title kak.ui.protocol.Line
+---@param content kak.ui.protocol.Lines
+---@param anchor kak.ui.protocol.Coord
+---@param face kak.ui.faces.Face?
+---@param style kak.ui.protocol.InfoStyle
+---@return kak.ui.popups.InfoKind
 function Manager:_info_inline(title, content, anchor, face, style)
-  if not self.renderer or not self.renderer.content_buf then return 'inline' end
-  local buf = self.renderer.content_buf
+  local renderer = self.renderer
+  if not renderer or not renderer.content_buf then return 'inline' end
+  local buf = renderer.content_buf
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(anchor.line, total - 1))
+  ---@cast row integer
   local hl = self.faces:get(face)
   vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
   local order = style == 'inlineAbove' and -1 or 1
+  ---@cast order integer
   local base_row = math.max(0, math.min(row + order, total - 1))
+  ---@cast base_row integer
   local col = anchor.column or 0
+  ---@cast col integer
   vim.api.nvim_buf_set_extmark(buf, self.float_ns, base_row, col, {
     virt_text = { { line_to_text(title), hl } },
     virt_text_pos = 'eol',
@@ -293,6 +418,7 @@ function Manager:_info_inline(title, content, anchor, face, style)
   })
   for i, line in ipairs(content) do
     local r = math.max(0, math.min(base_row + i * order, total - 1))
+    ---@cast r integer
     vim.api.nvim_buf_set_extmark(buf, self.float_ns, r, col, {
       virt_text = { { line_to_text(line), hl } },
       virt_text_pos = 'eol',
@@ -306,20 +432,14 @@ function Manager:_info_inline(title, content, anchor, face, style)
 end
 
 function Manager:info_hide()
-  if not self.info_state then return end
-  if
-    self.info_state.kind == 'float'
-    and self.info_state.win
-    and vim.api.nvim_win_is_valid(self.info_state.win)
-  then
-    pcall(vim.api.nvim_win_close, self.info_state.win, true)
+  local state = self.info_state
+  if not state then return end
+  if state.kind == 'float' and state.win and vim.api.nvim_win_is_valid(state.win) then
+    pcall(vim.api.nvim_win_close, state.win, true)
   end
-  if
-    self.renderer
-    and self.renderer.content_buf
-    and vim.api.nvim_buf_is_valid(self.renderer.content_buf)
-  then
-    vim.api.nvim_buf_clear_namespace(self.renderer.content_buf, self.float_ns, 0, -1)
+  local renderer = self.renderer
+  if renderer and renderer.content_buf and vim.api.nvim_buf_is_valid(renderer.content_buf) then
+    vim.api.nvim_buf_clear_namespace(renderer.content_buf, self.float_ns, 0, -1)
   end
   self.info_state = nil
 end

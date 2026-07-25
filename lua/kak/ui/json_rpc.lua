@@ -9,6 +9,71 @@
 --- Kakoune direction is pure `keys` / `mouse_*` / `resize` / `scroll` /
 --- `menu_select` notifications.
 
+---@class kak.ui.json_rpc.JsonValue
+---@field [integer] kak.ui.json_rpc.JsonValue
+---@field [string] kak.ui.json_rpc.JsonValue|string|integer|boolean|nil
+
+---@class kak.ui.json_rpc.RpcRequest
+---@field jsonrpc '2.0'
+---@field id integer
+---@field method string
+---@field params any[]
+
+---@class kak.ui.json_rpc.RpcNotification
+---@field jsonrpc '2.0'
+---@field method string
+---@field params any[]
+
+---@class kak.ui.json_rpc.RpcResponse
+---@field jsonrpc '2.0'
+---@field id integer
+---@field error any
+---@field result any
+
+---@alias kak.ui.json_rpc.RpcMessage
+---| kak.ui.json_rpc.RpcRequest
+---| kak.ui.json_rpc.RpcNotification
+---| kak.ui.json_rpc.RpcResponse
+
+---@alias kak.ui.json_rpc.RequestCallback fun(err: any, result: any, request_id: integer)
+
+---@class kak.ui.json_rpc.Dispatchers
+---@field on_notify fun(method: string, params?: any[]): nil
+---@field on_request fun(method: string, params?: any[]): any?, table?
+---@field on_exit fun(code: integer, signal: integer): nil
+---@field on_error fun(code: integer, err: any): nil
+
+---@class kak.ui.json_rpc.TransportOptions
+---@field cwd? string
+---@field env? table<string, string>
+
+---@class kak.ui.json_rpc.Transport
+---@field closing boolean
+---@field cmd string[]
+---@field extra? kak.ui.json_rpc.TransportOptions
+---@field sysobj? vim.SystemObj
+---@field on_data fun(err: any, data: string?)
+---@field on_exit_cb fun(code: integer, signal: integer)
+---@field on_stderr fun(err: any, data: string?)
+---@field listen fun(self: kak.ui.json_rpc.Transport, on_data: fun(err: any, data: string?), on_exit: fun(code: integer, signal: integer))
+---@field write fun(self: kak.ui.json_rpc.Transport, s: string): boolean
+---@field is_closing fun(self: kak.ui.json_rpc.Transport): boolean
+---@field terminate fun(self: kak.ui.json_rpc.Transport)
+
+---@class kak.ui.json_rpc.Connection
+---@field request_count integer
+---@field request_callbacks table<integer, kak.ui.json_rpc.RequestCallback>
+---@field transport kak.ui.json_rpc.Transport
+---@field dispatchers kak.ui.json_rpc.Dispatchers
+---@field log kak.ui.log.Logger
+---@field incoming_buf string
+---@field closed boolean
+---@field notify fun(self: kak.ui.json_rpc.Connection, method: string, params: any[]): boolean
+---@field request fun(self: kak.ui.json_rpc.Connection, method: string, params: any[], callback: kak.ui.json_rpc.RequestCallback): boolean|integer
+---@field respond fun(self: kak.ui.json_rpc.Connection, request_id: integer, err: any, result: any): boolean
+---@field is_closing fun(self: kak.ui.json_rpc.Connection): boolean
+---@field terminate fun(self: kak.ui.json_rpc.Connection)
+
 local M = {}
 
 if not vim.system then error('kak.ui.json_rpc requires vim.system (nvim 0.10+)') end
@@ -20,6 +85,8 @@ local NIL = vim.NIL
 
 local log = require('kak.ui.log').log
 
+---@param fn fun(...: any)
+---@return fun(...: any)
 local function schedule_wrap(fn)
   if vim.schedule_wrap then return vim.schedule_wrap(fn) end
   return function(...)
@@ -28,6 +95,8 @@ local function schedule_wrap(fn)
   end
 end
 
+---@param fn fun(...: any)
+---@return fun(...: any)
 local function schedule_fn(fn)
   return function(...)
     local args = { ... }
@@ -35,34 +104,38 @@ local function schedule_fn(fn)
   end
 end
 
+---@param msg string
+---@return string
 local function ndjson_encode(msg) return msg .. '\n' end
 
+---@param buf string
+---@param chunk string
+---@param on_message fun(line: string)
+---@return string remaining (incomplete) tail left in the buffer
 local function ndjson_feed(buf, chunk, on_message)
   -- Splits `buf .. chunk` on `\n`, emits each complete line, retains
   -- the trailing partial line in `buf`. Tolerates `\r\n` and empty lines.
   local data = buf .. chunk
-  local start = 1
+  local start, last_tail = 1, ''
   while true do
     local nl = data:find('\n', start, true)
-    if not nl then return data:sub(start) end
+    if not nl then
+      last_tail = data:sub(start)
+      break
+    end
     local line = data:sub(start, nl - 1)
     if line:sub(-1) == '\r' then line = line:sub(1, -2) end
     if #line > 0 then on_message(line) end
     start = nl + 1
   end
+  return last_tail
 end
 
---- @class kak.ui.json_rpc.Transport
---- @field closing boolean
---- @field cmd string[]
---- @field extra? { cwd?: string, env?: table<string,string> }
---- @field sysobj? vim.SystemObj
---- @field on_data fun(err: any, data: string?)
---- @field on_exit_cb fun(code: integer, signal: integer)
---- @field on_stderr fun(err: any, data: string?)
 local Transport = {}
 Transport.__index = Transport
 
+---@param on_data fun(err: any, data: string?)
+---@param on_exit fun(code: integer, signal: integer)
 function Transport:listen(on_data, on_exit)
   self.on_data = schedule_wrap(on_data)
   self.on_exit_cb = schedule_fn(on_exit)
@@ -70,6 +143,7 @@ function Transport:listen(on_data, on_exit)
     if chunk then log.error('rpc.stderr', self.cmd[1], chunk) end
   end
 
+  ---@type vim.SystemOpts
   local spawn_opts = {
     stdin = true,
     stdout = self.on_data,
@@ -81,8 +155,8 @@ function Transport:listen(on_data, on_exit)
   end
 
   local ok, sysobj_or_err = pcall(vim.system, self.cmd, spawn_opts, function(obj)
-    log.info('subprocess exit', { code = obj.code, signal = obj.signal })
-    if self.on_exit_cb then self.on_exit_cb(obj.code, obj.signal) end
+    log.info('subprocess exit', { code = obj:wait().code, signal = obj:wait().signal })
+    if self.on_exit_cb then self.on_exit_cb(obj:wait().code, obj:wait().signal) end
   end)
 
   if not ok then
@@ -97,6 +171,8 @@ function Transport:listen(on_data, on_exit)
   self.sysobj = sysobj_or_err
 end
 
+---@param s string
+---@return boolean
 function Transport:write(s)
   if self.closing then return false end
   if self.sysobj and not self.sysobj:is_closing() then
@@ -106,6 +182,7 @@ function Transport:write(s)
   return false
 end
 
+---@return boolean
 function Transport:is_closing()
   if self.closing then return true end
   return self.sysobj ~= nil and self.sysobj:is_closing()
@@ -119,6 +196,9 @@ function Transport:terminate()
   end
 end
 
+---@param cmd string[]
+---@param extra? kak.ui.json_rpc.TransportOptions
+---@return kak.ui.json_rpc.Transport
 function Transport.spawn(cmd, extra)
   return setmetatable({
     closing = false,
@@ -127,14 +207,10 @@ function Transport.spawn(cmd, extra)
   }, Transport)
 end
 
---- @class kak.ui.json_rpc.Dispatchers
---- @field on_notify fun(method: string, params?: any[]): nil
---- @field on_request fun(method: string, params?: any[]): any?, table?
---- @field on_exit fun(code: integer, signal: integer): nil
---- @field on_error fun(code: integer, err: any): nil
 local Connection = {}
 Connection.__index = Connection
 
+---@enum kak.ui.json_rpc.ClientError
 M.client_errors = {
   INVALID_SERVER_MESSAGE = 1,
   INVALID_SERVER_JSON = 2,
@@ -146,6 +222,9 @@ M.client_errors = {
 
 local ERR_INTERNAL = -32603
 
+---@param transport kak.ui.json_rpc.Transport
+---@param dispatchers kak.ui.json_rpc.Dispatchers
+---@return kak.ui.json_rpc.Connection
 function Connection.new(transport, dispatchers)
   assert(transport, 'transport required')
   assert(dispatchers, 'dispatchers required')
@@ -193,6 +272,7 @@ function Connection.new(transport, dispatchers)
   return self
 end
 
+---@param line string
 function Connection:_dispatch_raw(line)
   if #line == 0 then return end
   local ok, message = pcall(json_decode, line)
@@ -200,9 +280,11 @@ function Connection:_dispatch_raw(line)
     self:on_error(M.client_errors.INVALID_SERVER_JSON, message)
     return
   end
+  ---@cast message kak.ui.json_rpc.RpcMessage
   self:_dispatch(message)
 end
 
+---@param message kak.ui.json_rpc.RpcMessage
 function Connection:_dispatch(message)
   log.debug('rpc.receive', message)
 
@@ -235,6 +317,7 @@ function Connection:_dispatch(message)
       self:on_error(M.client_errors.INVALID_SERVER_MESSAGE, message)
       return
     end
+    ---@cast message.id integer
     local cb = self.request_callbacks[message.id]
     if not cb then return end
     self.request_callbacks[message.id] = nil
@@ -257,6 +340,8 @@ function Connection:_dispatch(message)
   self:on_error(M.client_errors.INVALID_SERVER_MESSAGE, message)
 end
 
+---@param message kak.ui.json_rpc.RpcNotification|kak.ui.json_rpc.RpcRequest|kak.ui.json_rpc.RpcResponse
+---@return boolean
 function Connection:_send(message)
   if self.transport:is_closing() then return false end
   local ok, json = pcall(json_encode, message)
@@ -267,6 +352,7 @@ function Connection:_send(message)
   return self.transport:write(ndjson_encode(json))
 end
 
+---@return boolean
 function Connection:is_closing() return self.closed or self.transport:is_closing() end
 
 function Connection:terminate()
@@ -275,6 +361,9 @@ function Connection:terminate()
   self.transport:terminate()
 end
 
+---@param method string
+---@param params any[]
+---@return boolean
 function Connection:notify(method, params)
   assert(type(method) == 'string', 'method must be string')
   return self:_send({
@@ -284,6 +373,10 @@ function Connection:notify(method, params)
   })
 end
 
+---@param request_id integer
+---@param err any
+---@param result any
+---@return boolean
 function Connection:respond(request_id, err, result)
   return self:_send({
     jsonrpc = '2.0',
@@ -293,6 +386,11 @@ function Connection:respond(request_id, err, result)
   })
 end
 
+---@param method string
+---@param params any[]
+---@param callback kak.ui.json_rpc.RequestCallback
+---@return boolean success status, or `false` if the message could not be sent
+---@return integer? request_id id assigned by the server role when sent
 function Connection:request(method, params, callback)
   assert(type(method) == 'string', 'method must be string')
   assert(type(callback) == 'function', 'callback must be function')
@@ -309,21 +407,32 @@ function Connection:request(method, params, callback)
   return true, request_id
 end
 
+---@param code integer
+---@param err any
 function Connection:on_error(code, err) pcall(self.dispatchers.on_error, code, err) end
+
+---@class kak.ui.json_rpc.SpawnOptions
+---@field dispatchers kak.ui.json_rpc.Dispatchers
+---@field cwd? string
+---@field env? table<string, string>
 
 --- Spawn a child process and start a NDJSON JSON-RPC connection to it
 --- over stdio.
---- @param cmd string[] Command argv. The first element is the executable.
---- @param opts? { dispatchers: kak.ui.json_rpc.Dispatchers,
----                cwd?: string, env?: table<string,string> }
---- @return kak.ui.json_rpc.Connection
+---@param cmd string[] Command argv. The first element is the executable.
+---@param opts? kak.ui.json_rpc.SpawnOptions
+---@return kak.ui.json_rpc.Connection
 function M.spawn(cmd, opts)
   assert(type(cmd) == 'table' and #cmd >= 1, 'cmd must be non-empty array')
-  opts = opts or {}
-  assert(type(opts.dispatchers) == 'table', 'opts.dispatchers required')
-  return Connection.new(Transport.spawn(cmd, { cwd = opts.cwd, env = opts.env }), opts.dispatchers)
+  ---@cast opts -nil
+  local resolved = opts or {}
+  assert(type(resolved.dispatchers) == 'table', 'opts.dispatchers required')
+  return Connection.new(
+    Transport.spawn(cmd, { cwd = resolved.cwd, env = resolved.env }),
+    resolved.dispatchers
+  )
 end
 
+---@type fun(buf: string, chunk: string, on_message: fun(line: string)): string
 M._ndjson_feed = ndjson_feed
 
 return M

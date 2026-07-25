@@ -14,15 +14,54 @@ local popups = require('kak.ui.popups')
 local input = require('kak.ui.input')
 local log = require('kak.ui.log').log
 
+---@alias kak.ui.OpenOpts { session?: string, cmd?: string[], extra_args?: string[], cwd?: string, env?: table<string, string> }
+
+---@class kak.ui.Session
+---@field conn kak.ui.json_rpc.Connection
+---@field buf integer
+---@field handlers table<string, function>
+---@field renderer kak.ui.render.Renderer
+---@field faces kak.ui.faces.Cache
+---@field popups kak.ui.popups.Manager
+---@field input kak.ui.input.Handler
+---@field close fun(self: kak.ui.Session)
+
+---@class kak.ui.HandlerContext
+---@field ui_options table<string, any>
+---@field last_force boolean
+
 local M = {}
 
+---@type kak.ui.Session?
 local ACTIVE = nil
 
+---@param session string?
+---@return string
 local function bufname(session) return session and ('kak://' .. session) or 'kak://main' end
 
+---@class kak.ui.RenderHandlers
+---@field handlers table<string, function>
+---@field renderer kak.ui.render.Renderer
+---@field faces kak.ui.faces.Cache
+---@field popups kak.ui.popups.Manager
+---@field ensure_buf fun(): integer
+
+---@param ctx kak.ui.HandlerContext
+---@param ui_options table<string, any>
+---@return kak.ui.RenderHandlers
 local function make_handlers(ctx, ui_options)
-  local face_cache =
-    faces.new({ cap = (ui_options and tonumber(ui_options.face_cache_size)) or 512 })
+  ---@param v any
+  ---@return integer?
+  local function to_integer(v)
+    local n = tonumber(v)
+    if n == nil then return nil end
+    if n ~= math.floor(n) then return nil end
+    ---@cast n integer
+    return n
+  end
+
+  local cap = to_integer(ui_options and ui_options.face_cache_size) or 512
+  local face_cache = faces.new({ cap = cap })
   local renderer = render.new({ faces = face_cache })
   local popup_mgr = popups.new({ faces = face_cache, renderer = renderer })
 
@@ -68,7 +107,8 @@ local function make_handlers(ctx, ui_options)
   }
 end
 
---- @param opts { session?: string, cmd?: string[], extra_args?: string[], cwd?: string, env?: table }
+---@param opts kak.ui.OpenOpts?
+---@return kak.ui.Session
 function M.open(opts)
   if ACTIVE then return ACTIVE end
   opts = opts or {}
@@ -94,7 +134,6 @@ function M.open(opts)
   local sess
 
   local h = make_handlers(ctx, ui_options)
-  local conn
 
   local dispatchers = {
     on_notify = function(method, params)
@@ -127,14 +166,15 @@ function M.open(opts)
     on_error = function(code, err) log.warn('rpc error', code, vim.inspect(err)) end,
   }
 
-  conn = json_rpc.spawn(argv, {
+  ---@type kak.ui.json_rpc.Connection
+  local conn = json_rpc.spawn(argv, {
     dispatchers = dispatchers,
     cwd = opts.cwd,
     env = opts.env,
   })
 
   local buf = h.ensure_buf()
-  local input_handler = input.new({ rpc = conn, renderer = h.renderer })
+  local input_handler = input.new({ rpc = conn })
   input_handler:enable(buf)
 
   -- Send initial `resize` once Kakoune has had a chance to write back.
@@ -165,8 +205,8 @@ function M.open(opts)
   local can_reuse = cur_buf ~= buf
   if can_reuse then
     local lines = vim.api.nvim_buf_get_lines(cur_buf, 0, -1, false)
-    local listed = vim.api.nvim_buf_get_option(cur_buf, 'buflisted')
-    local ft = vim.api.nvim_buf_get_option(cur_buf, 'filetype')
+    local listed = vim.api.nvim_get_option_value('buflisted', { buf = cur_buf })
+    local ft = vim.api.nvim_get_option_value('filetype', { buf = cur_buf })
     can_reuse = not listed
       and #lines <= 1
       and (lines[1] or '') == ''
@@ -181,6 +221,7 @@ function M.open(opts)
 
   if vim.api.nvim_win_get_buf(keeper) ~= buf then vim.api.nvim_win_set_buf(keeper, buf) end
 
+  ---@type kak.ui.Session
   sess = setmetatable({
     conn = conn,
     buf = buf,
@@ -203,6 +244,7 @@ function M.close()
   ACTIVE:close()
 end
 
+---@return kak.ui.Session?
 function M.active() return ACTIVE end
 
 return M

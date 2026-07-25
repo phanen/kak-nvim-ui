@@ -5,10 +5,27 @@
 --- `underline` color maps to nvim `sp`. `final_*` / `blink` / `dim`
 --- have no nvim analog and are dropped.
 
+---@alias kak.ui.faces.Color string
+
+---@class kak.ui.faces.Face
+---@field fg kak.ui.faces.Color?
+---@field bg kak.ui.faces.Color?
+---@field underline kak.ui.faces.Color?
+---@field attributes string[]?
+
+---@class kak.ui.faces.CacheEntry
+---@field name string
+---@field key string
+---@field tick integer
+
+---@class kak.ui.faces.LRU
+---@field tick integer?
+
 local M = {}
 
 local HL_NS = vim.api.nvim_create_namespace('kak-ui-faces')
 
+---@type table<string, string>
 local NAMED_TO_HEX = {
   default = 'default',
   black = '#000000',
@@ -34,6 +51,7 @@ end
 
 local bit = require('bit')
 
+---@type table<string, integer>
 M._attr_bit = {
   underline = bit.lshift(1, 0),
   curly_underline = bit.lshift(1, 1),
@@ -57,12 +75,15 @@ local BOLD_BIT = bit.lshift(1, 4)
 local ITALIC_BIT = bit.lshift(1, 5)
 local STRIKE_BIT = bit.lshift(1, 6)
 
+---@type table<integer, string>
 local ATTR_NAMES = {}
-for name, bit in pairs(M._attr_bit) do
-  ATTR_NAMES[bit] = name
+for name, attr_bit in pairs(M._attr_bit) do
+  ATTR_NAMES[attr_bit] = name
 end
 M._ATTR_NAMES = ATTR_NAMES
 
+---@param attrs string[]?
+---@return integer
 local function attrs_to_bits(attrs)
   if not attrs or #attrs == 0 then return 0 end
   local bits = 0
@@ -77,6 +98,8 @@ local function attrs_to_bits(attrs)
 end
 
 -- FNV-1a-ish hash for short stable suffix.
+---@param key string
+---@return integer
 local function fnv1a(key)
   local h = 2166136261
   for i = 1, #key do
@@ -85,6 +108,9 @@ local function fnv1a(key)
   return h
 end
 
+---@param face kak.ui.faces.Face?
+---@param opts? { default?: boolean }
+---@return table
 local function face_to_val(face, opts)
   opts = opts or {}
   local val = {}
@@ -116,6 +142,8 @@ local function face_to_val(face, opts)
   return val
 end
 
+---@param face kak.ui.faces.Face?
+---@return string
 local function face_to_key(face)
   if not face then return 'd' end
   local fg = face.fg or '_'
@@ -134,10 +162,16 @@ local function face_to_key(face)
   return table.concat({ fg, bg, ul, attr_str }, '|')
 end
 
---- @class kak.ui.faces.Cache
+---@class kak.ui.faces.Cache
+---@field cap integer
+---@field counter integer
+---@field by_key table<string, kak.ui.faces.CacheEntry>
+---@field lru kak.ui.faces.LRU
 local Cache = {}
 Cache.__index = Cache
 
+---@param opts? { cap?: integer }
+---@return kak.ui.faces.Cache
 function M.new(opts)
   opts = opts or {}
   return setmetatable({
@@ -150,6 +184,8 @@ end
 
 --- Return highlight group name for a Face. Registers the group via
 --- `nvim_set_hl` on cache miss. `nil` face returns the cache's default.
+---@param face kak.ui.faces.Face?
+---@return string
 function Cache:get(face)
   local key = face_to_key(face)
   local entry = self.by_key[key]
@@ -161,9 +197,12 @@ function Cache:get(face)
   self.counter = self.counter + 1
   local name = face and string.format('KakFace_%08x', fnv1a(key)) or 'KakDefault'
   pcall(vim.api.nvim_set_hl, HL_NS, name, face_to_val(face, { default = (face == nil) }))
-  entry = { name = name, key = key, tick = (self.lru.tick or 0) + 1 }
-  self.by_key[key] = entry
-  self.lru.tick = entry.tick
+  self.by_key[key] = {
+    name = name,
+    key = key,
+    tick = (self.lru.tick or 0) + 1,
+  }
+  self.lru.tick = self.by_key[key].tick
   if vim.tbl_count(self.by_key) > self.cap then self:_evict() end
   return name
 end
@@ -181,8 +220,11 @@ end
 
 function Cache:size() return vim.tbl_count(self.by_key) end
 
+---@type fun(face: kak.ui.faces.Face?): string
 M.face_to_key = face_to_key
+---@type fun(face: kak.ui.faces.Face?, opts?: { default?: boolean }): table
 M.face_to_val = face_to_val
+---@type fun(color: string?): string
 M.color_to_hl = color_to_hl
 
 return M

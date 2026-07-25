@@ -9,8 +9,11 @@
 --- singleton everywhere.
 ---
 
+---@class kak.ui.log.Logger : vim.Log
+
 local M = {}
 
+---@enum kak.ui.log.Level
 M.levels = {
   TRACE = 0,
   DEBUG = 1,
@@ -20,6 +23,7 @@ M.levels = {
   OFF = 5,
 }
 
+---@type table<integer, string>
 local LABEL = {
   [M.levels.TRACE] = 'TRACE',
   [M.levels.DEBUG] = 'DEBUG',
@@ -46,16 +50,17 @@ local function make_logger()
     end
     return real
   end
+  ---@type kak.ui.log.Logger
   return {
     trace = function(...) emit(M.levels.TRACE, ...) end,
     debug = function(...) emit(M.levels.DEBUG, ...) end,
     info = function(...) emit(M.levels.INFO, ...) end,
-    warn = function(...) emit(M.levels.WARN, ...) end,
+    warn = function(...) emit(threshold, ...) end,
     error = function(...) emit(M.levels.ERROR, ...) end,
   }
 end
 
----@type table
+---@type kak.ui.log.Logger
 M.log = make_logger()
 
 return M

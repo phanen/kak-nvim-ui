@@ -10,6 +10,12 @@
 --- `mouse_move`, `mouse_press`, `mouse_release`, `scroll`.
 ---
 
+---@alias kak.ui.input.MouseButton 'left' | 'right' | 'middle'
+---@alias kak.ui.input.MouseKind 'press' | 'release' | 'scroll' | 'move'
+---@alias kak.ui.input.MousePos { line: integer, column: integer }
+
+---@class kak.ui.input.Connection : kak.ui.json_rpc.Connection
+
 local M = {}
 
 local log = require('kak.ui.log').log
@@ -54,10 +60,13 @@ local NVIM_BODY_TO_KAK = {
   Gt = 'gt',
 }
 
+---@type table<string, string>
 local MOD_PREFIX = { C = 'c-', A = 'a-', M = 'a-', S = 's-', D = 'd-' }
 
 --- Translate one nvim key notation (`<C-A>`, `<Up>`, `i`, ...) to a
 --- single Kakoune key string. Returns `nil` if the input is not usable.
+---@param key string
+---@return string?
 function M.nvim_to_kak(key)
   if type(key) ~= 'string' or #key == 0 then return nil end
   if key:sub(1, 1) ~= '<' or key:sub(-1) ~= '>' then return key end
@@ -92,6 +101,8 @@ end
 --- Translate a notation string (already in `<...>` form) to a list of
 --- Kakoune key strings. Each `<...>` is one entry; bare printable bytes
 --- are split into per-character entries.
+---@param raw string?
+---@return string[]
 function M.raw_to_kak(raw)
   if not raw or #raw == 0 then return {} end
   local out = {}
@@ -128,6 +139,8 @@ end
 --- Convert a raw byte sequence (as received from `vim.on_key`) to nvim
 --- `<...>` notation, then forward to `raw_to_kak` for Kakoune-ready keys.
 --- Empty / `nil` input returns an empty list.
+---@param raw string?
+---@return string[]
 function M.from_on_key(raw)
   if not raw or #raw == 0 then return {} end
   local ok, notation = pcall(vim.fn.keytrans, raw)
@@ -136,18 +149,28 @@ function M.from_on_key(raw)
 end
 
 --- `vim.fn.getmousepos()` returns { line, column, screenrow, screencol, winid }.
+---@return integer?, integer?
 local function mouse_payload()
   local pos = vim.fn.getmousepos()
   if not pos or not pos.winid or pos.winid == 0 then return nil end
   return pos.line, pos.column
 end
 
---- @class kak.ui.input.Handler
+---@class kak.ui.input.Handler
+---@field rpc kak.ui.input.Connection
+---@field buf integer?
+---@field enabled boolean
+---@field on_key_ns integer?
+---@field on_key_fn fun(_, typed: string): string?
+---@field paste_orig (fun(lines: string[], phase: (-1|1|2|3)): boolean)?
+---@field mouse_maps string[]
 local Handler = {}
 Handler.__index = Handler
 
+---@param opts { rpc: kak.ui.input.Connection }
+---@return kak.ui.input.Handler
 function M.new(opts)
-  local self = setmetatable({
+  return setmetatable({
     rpc = opts.rpc,
     buf = nil,
     enabled = false,
@@ -156,10 +179,11 @@ function M.new(opts)
     paste_orig = nil,
     mouse_maps = {},
   }, Handler)
-  return self
 end
 
---- Map a mouse event to a wire-protocol method.
+--- Map a mouse event LHS to (button, kind, scroll_dir).
+---@param lhs string
+---@return kak.ui.input.MouseButton?, kak.ui.input.MouseKind, integer?
 local function mouse_event_to_btn(lhs)
   if lhs:find('LeftMouse') then return 'left', 'press' end
   if lhs:find('RightMouse') then return 'right', 'press' end
@@ -172,6 +196,7 @@ local function mouse_event_to_btn(lhs)
   return nil, 'move'
 end
 
+---@param buf integer
 function Handler:enable(buf)
   if self.enabled then return end
   self.enabled = true
@@ -231,6 +256,7 @@ function Handler:enable(buf)
 
   pcall(vim.api.nvim_set_option_value, 'mouse', 'a', { buf = buf })
 
+  ---@type string[]
   local mouse_lhs = {
     '<LeftMouse>',
     '<RightMouse>',
@@ -247,18 +273,21 @@ function Handler:enable(buf)
     map(lhs, send_mouse_event(lhs))
   end
 
-  self.paste_orig = vim.paste
+  local paste_orig = vim.paste
+  ---@cast paste_orig fun(lines: string[], phase: -1|1|2|3): boolean
+  self.paste_orig = paste_orig
+  ---@param lines string[]
+  ---@param phase -1|1|2|3
+  ---@return boolean
   vim.paste = function(lines, phase)
-    if vim.api.nvim_get_current_buf() ~= handler.buf then
-      return handler.paste_orig and handler.paste_orig(lines, phase) or false
-    end
+    if vim.api.nvim_get_current_buf() ~= handler.buf then return paste_orig(lines, phase) end
     if phase == -1 or phase == 3 then
       for _, line in ipairs(lines) do
         pcall(handler.rpc.notify, handler.rpc, 'paste', { line })
       end
       return true
     end
-    return handler.paste_orig and handler.paste_orig(lines, phase) or false
+    return paste_orig(lines, phase)
   end
 end
 
@@ -279,7 +308,8 @@ end
 
 --- Translate `vim.fn.getmousepos()`-like position to Kakoune draw
 --- coordinates. Returns `nil` if the cursor is in a non-content window.
-function Handler:mouse_to_kak_coord() return mouse_payload() end
+---@return integer?, integer?
+function Handler.mouse_to_kak_coord() return mouse_payload() end
 
 --- Report current nvim window dimensions to kakoune.
 function Handler:report_resize()

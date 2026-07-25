@@ -4,6 +4,78 @@
 ---
 --- One JSON object per `\n`-terminated chunk. Params are positional arrays.
 
+---@alias kak.ui.protocol.AtomFace kak.ui.faces.Face
+---@alias kak.ui.protocol.Atom { face: kak.ui.protocol.AtomFace?, contents: string }
+---@alias kak.ui.protocol.Line kak.ui.protocol.Atom[]
+---@alias kak.ui.protocol.Lines kak.ui.protocol.Line[]
+---@alias kak.ui.protocol.Coord { line: integer, column: integer }
+---@alias kak.ui.protocol.DrawStyle 'command' | 'search' | 'prompt' | 'status'
+---@alias kak.ui.protocol.MenuStyle 'prompt' | 'search' | 'inline'
+---@alias kak.ui.protocol.InfoStyle
+---| 'prompt'
+---| 'inline'
+---| 'inlineAbove'
+---| 'inlineBelow'
+---| 'menuDoc'
+---| 'modal'
+
+---@class kak.ui.protocol.DrawParams
+---@field lines kak.ui.protocol.Lines
+---@field cursor_pos kak.ui.protocol.Coord
+---@field default_face kak.ui.faces.Face?
+---@field padding_face kak.ui.faces.Face?
+---@field widget_columns integer
+
+---@class kak.ui.protocol.DrawStatusParams
+---@field prompt kak.ui.protocol.Line
+---@field content kak.ui.protocol.Line
+---@field cursor_pos integer
+---@field mode_line kak.ui.protocol.Line
+---@field default_face kak.ui.faces.Face?
+---@field style kak.ui.protocol.DrawStyle
+
+---@class kak.ui.protocol.MenuShowParams
+---@field items kak.ui.protocol.Lines
+---@field anchor kak.ui.protocol.Coord
+---@field fg kak.ui.faces.Face?
+---@field bg kak.ui.faces.Face?
+---@field style kak.ui.protocol.MenuStyle
+
+---@class kak.ui.protocol.MenuSelectParams
+---@field selected integer
+
+---@class kak.ui.protocol.MenuHideParams
+
+---@class kak.ui.protocol.InfoShowParams
+---@field title kak.ui.protocol.Line
+---@field content kak.ui.protocol.Lines
+---@field anchor kak.ui.protocol.Coord
+---@field face kak.ui.faces.Face?
+---@field style kak.ui.protocol.InfoStyle
+
+---@class kak.ui.protocol.InfoHideParams
+
+---@class kak.ui.protocol.RefreshParams
+---@field force boolean
+
+---@class kak.ui.protocol.SetUiOptionsParams
+---@field options table<string, any>
+
+---@alias kak.ui.protocol.Params
+---| kak.ui.protocol.DrawParams
+---| kak.ui.protocol.DrawStatusParams
+---| kak.ui.protocol.MenuShowParams
+---| kak.ui.protocol.MenuSelectParams
+---| kak.ui.protocol.MenuHideParams
+---| kak.ui.protocol.InfoShowParams
+---| kak.ui.protocol.InfoHideParams
+---| kak.ui.protocol.RefreshParams
+---| kak.ui.protocol.SetUiOptionsParams
+
+---@class kak.ui.protocol.Decoded
+---@field method string
+---@field params kak.ui.protocol.Params
+
 local M = {}
 
 local log = require('kak.ui.log').log
@@ -14,6 +86,10 @@ local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NI
 -- JSON `null`); both mean "absent" on the wire.
 local function absent(v) return v == nil or v == NIL end
 
+---@param name string
+---@param params any?
+---@param min integer?
+---@return table
 local function expect_array(name, params, min)
   if absent(params) then error(name .. ': params must be array', 3) end
   if type(params) ~= 'table' then
@@ -23,6 +99,9 @@ local function expect_array(name, params, min)
   return params
 end
 
+---@param method string
+---@param v any
+---@return string?
 local function parse_color(method, v)
   if absent(v) or v == 'default' then return nil end
   if type(v) ~= 'string' then error(method .. ': color must be string', 3) end
@@ -33,6 +112,10 @@ local function parse_color(method, v)
   return v
 end
 
+---@param method string
+---@param face any
+---@param idx any
+---@return kak.ui.faces.Face?
 local function parse_face(method, face, idx)
   if absent(face) then return nil end
   if type(face) ~= 'table' then
@@ -46,6 +129,10 @@ local function parse_face(method, face, idx)
   }
 end
 
+---@param method string
+---@param coord any
+---@param idx any
+---@return kak.ui.protocol.Coord
 local function parse_coord(method, coord, idx)
   if absent(coord) or type(coord) ~= 'table' then
     error(method .. ': coord @' .. tostring(idx) .. ' missing', 3)
@@ -56,6 +143,10 @@ local function parse_coord(method, coord, idx)
   return coord
 end
 
+---@param method string
+---@param line any
+---@param idx any
+---@return kak.ui.protocol.Line
 local function parse_line(method, line, idx)
   if absent(line) or type(line) ~= 'table' then
     error(method .. ': line @' .. tostring(idx) .. ' must be array of atoms', 3)
@@ -73,6 +164,10 @@ local function parse_line(method, line, idx)
   return atoms
 end
 
+---@param method string
+---@param lines any
+---@param idx any
+---@return kak.ui.protocol.Lines
 local function parse_lines(method, lines, idx)
   if absent(lines) or type(lines) ~= 'table' then
     error(method .. ': lines @' .. tostring(idx) .. ' must be array of lines', 3)
@@ -84,6 +179,11 @@ local function parse_lines(method, lines, idx)
   return out
 end
 
+---@param method string
+---@param val any
+---@param valid table<string, boolean>
+---@param idx any
+---@return string
 local function check_enum(method, val, valid, idx)
   if not valid[val] then
     error(method .. ': bad enum value ' .. tostring(val) .. ' @' .. tostring(idx), 3)
@@ -91,6 +191,7 @@ local function check_enum(method, val, valid, idx)
   return val
 end
 
+---@type table<string, fun(params: any): kak.ui.protocol.Params>
 local HANDLERS = {}
 
 HANDLERS.draw = function(params)
@@ -182,7 +283,8 @@ HANDLERS.set_ui_options = function(params)
   return { options = params[1] }
 end
 
---- Decode a single inbound JSON object into {method, params}.
+---@param message table
+---@return kak.ui.protocol.Decoded
 function M.decode(message)
   if absent(message) or type(message) ~= 'table' then error('message must be object', 2) end
   if message.jsonrpc ~= '2.0' then
@@ -197,7 +299,14 @@ function M.decode(message)
   }
 end
 
---- Dispatch a parsed JSON-RPC inbound message to `handlers`.
+---@alias kak.ui.protocol.Handler fun(params: kak.ui.protocol.Params): nil
+
+---@class kak.ui.protocol.Handlers
+---@field [string] kak.ui.protocol.Handler
+---@field on_default kak.ui.protocol.Handler?
+
+---@param message table
+---@param handlers kak.ui.protocol.Handlers
 function M.dispatch(message, handlers)
   local decoded
   local ok, err = pcall(function() decoded = M.decode(message) end)
@@ -205,12 +314,16 @@ function M.dispatch(message, handlers)
     log.warn('decode error:', tostring(err))
     return
   end
+  ---@cast decoded kak.ui.protocol.Decoded
   local h = handlers['on_' .. decoded.method] or handlers.on_default
   if not h then return end
   h(decoded.params)
 end
 
 --- Encode a UI -> Kakoune notification.
+---@param method string
+---@param params any[]
+---@return { jsonrpc: string, method: string, params: any[] }
 function M.encode_notify(method, params)
   assert(type(method) == 'string', 'method must be string')
   assert(type(params) == 'table', 'params must be array')
@@ -221,5 +334,6 @@ function M.encode_notify(method, params)
   }
 end
 
+---@type fun(v: any): string?
 M._parse_color = parse_color
 return M
