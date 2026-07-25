@@ -24,19 +24,32 @@ local faces = require('kak.ui.faces')
 ---@param line kak.ui.protocol.Line
 ---@param base kak.ui.faces.Face?
 ---@param cache kak.ui.faces.Cache
-local function write_atom_extmarks(ns, buf, i, line, base, cache)
+---@param col_offset? integer 0-based start column for the first atom (default 0; framed info passes 1 to skip the left border)
+local function write_atom_extmarks(ns, buf, i, line, base, cache, col_offset)
+  col_offset = col_offset or 0
+  -- Clamp end_col to the actual buffer line byte length. Framed info
+  -- body rows are truncated to inner_w by `frame.pad`, but the Line
+  -- atoms carry the FULL content; without clamping, an atom whose
+  -- end_byte exceeds the truncated line length throws
+  -- "Invalid 'end_col': out of range".
+  local line_text = vim.api.nvim_buf_get_lines(buf, i, i + 1, false)[1] or ''
+  local line_len = #line_text
   local byte = 0
   for _, atom in ipairs(line) do
     local s = atom.contents or ''
     if s ~= '' then
       local end_byte = byte + #s
-      local merged = faces.merge(base, atom.face)
-      local hl = cache:get(merged)
-      vim.api.nvim_buf_set_extmark(buf, ns, i, byte, {
-        end_col = end_byte,
-        hl_group = hl,
-        right_gravity = false,
-      })
+      local start_col = math.min(col_offset + byte, line_len)
+      local end_col = math.min(col_offset + end_byte, line_len)
+      if start_col < end_col then
+        local merged = faces.merge(base, atom.face)
+        local hl = cache:get(merged)
+        vim.api.nvim_buf_set_extmark(buf, ns, i, start_col, {
+          end_col = end_col,
+          hl_group = hl,
+          right_gravity = false,
+        })
+      end
       byte = end_byte
     end
   end
@@ -131,10 +144,11 @@ function M.open_info(ns, title, content, face, style, geom, focusable, cache)
       body[#body + 1] = layout.line_to_text(c)
     end
     frame.box_extmarks(buf, ns, geom.width, geom.height, title, body, face, cache)
-    -- Per-atom highlights on body lines (rows 2..h-2).
+    -- Per-atom highlights on body lines (rows 2..h-2). col_offset=1
+    -- skips the left `|` border baked into each padded row.
     local inner_h = math.max(1, geom.height - 2)
     for i = 1, inner_h - 1 do
-      write_atom_extmarks(ns, buf, i + 1, content[i] or {}, face, cache)
+      write_atom_extmarks(ns, buf, i + 1, content[i] or {}, face, cache, 1)
     end
   else
     local lines = { layout.line_to_text(title) }

@@ -47,9 +47,14 @@ local M = {}
 
 local log = require('kak.ui.log').log
 
+-- Buffer name must be unique per CLIENT (per content_buf), not per
+-- session: two `:new` clients on the same session would otherwise
+-- collide on `kak://<session>` -> E95 "Buffer with this name already
+-- exists". The bufnr suffix disambiguates.
 ---@param session? string
+---@param buf integer
 ---@return string
-local function bufname(session) return session and ('kak://' .. session) or 'kak://main' end
+local function bufname(session, buf) return ('kak://%s#%d'):format(session or 'main', buf) end
 
 -- Refcount for the global editor options we toggle when at least one
 -- Surface is attached. First attach saves the user's values and sets
@@ -117,7 +122,7 @@ function Surface:open(opts)
 
   -- The buffer was just created unlisted; nvim_buf_set_name is a
   -- straight setter and does not fail in normal flow.
-  vim.api.nvim_buf_set_name(self.content_buf, bufname(self.session))
+  vim.api.nvim_buf_set_name(self.content_buf, bufname(self.session, self.content_buf))
 
   -- laststatus=0: we render our OWN statusline in a float, so nvim
   -- must not draw its own statusline on top of it. cmdheight=0 keeps
