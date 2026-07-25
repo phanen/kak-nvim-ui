@@ -1,11 +1,6 @@
----
---- Shared test helpers. Re-exports everything from `nvim-test.helpers`
---- so callers can `local h = require('test.helpers')` and access
---- `h.exec_lua`, `h.eq`, `h.clear`, etc. without a second require.
----
---- Adds project-specific conveniences: rtp setup for the test target
---- and tmp file helpers used by the fake-kak server tests.
----
+-- Test helpers. Re-exports nvim-test's and adds:
+--   write_executable / write_file / write_wire_logged - tmp scripts/files
+--   with_kak_session / with_fake_kak - spawn and run a body in the child
 
 local helpers = require('nvim-test.helpers')
 
@@ -13,17 +8,13 @@ local M = helpers
 
 local exec_lua = helpers.exec_lua
 
---- Reset the test target nvim and append the project root to its
---- runtimepath so `require('kak.ui.*')` resolves in the child.
---- Call from `before_each`.
+--- Append project root to the child's runtimepath. Call in before_each.
 function M.setup()
   M.clear()
   exec_lua(function() vim.opt.rtp:append(vim.fn.getcwd()) end)
 end
 
---- Write `body` to a fresh tmp file and chmod it executable. Used for
---- fake-kak shell scripts in rpc + integration tests. Caller is
---- responsible for `os.remove(path)` cleanup.
+--- Write `body` to a tmp file and chmod 755. Caller removes with os.remove.
 --- @param body string
 --- @return string path
 function M.write_executable(body)
@@ -35,8 +26,7 @@ function M.write_executable(body)
   return path
 end
 
---- Write `lines` joined with `\n` to a fresh tmp file. Caller is
---- responsible for `os.remove(path)` cleanup.
+--- Write `lines` joined by `\n` to a tmp file. Caller removes with os.remove.
 --- @param lines string[]
 --- @return string path
 function M.write_file(lines)
@@ -46,6 +36,87 @@ function M.write_file(lines)
   f:flush()
   f:close()
   return path
+end
+
+--- Write a wrapper that exec's `cmd` while teeing its stdout/stderr to
+--- `wire_log`. `cmd` is shell-quoted (e.g. '/usr/bin/kak -ui json').
+--- @param cmd string
+--- @param wire_log string
+--- @return string path
+function M.write_wire_logged(cmd, wire_log)
+  return M.write_executable(
+    '#!/bin/sh\nexec '
+      .. cmd
+      .. ' "$@" 2>> '
+      .. wire_log
+      .. ' | tee -a '
+      .. wire_log
+      .. ' >/dev/null\n'
+  )
+end
+
+--- Spawn real `kak -ui json` and run `body(sess, ...)` in the child.
+--- `sess` is a `kak.ui.Session` with `.buf` / `.renderer` / `.conn`.
+--- Extra args are forwarded through the rpc layer (Lua closures do
+--- not survive `string.dump` and would be nil in the child).
+--- Drains 200 ms after body returns.
+--- @param opts { cmd?: string[], extra_args?: string[], wire_log?: string }
+--- @param body fun(sess: any, ...): any
+--- @return any
+function M.with_kak_session(opts, body, ...)
+  local cmd = opts.cmd or { 'kak' }
+  local extra_args = opts.extra_args or {}
+  local wire_path
+  if opts.wire_log then
+    wire_path = M.write_wire_logged(
+      table.concat(cmd, ' ') .. ' ' .. table.concat(extra_args, ' '),
+      opts.wire_log
+    )
+    cmd = { wire_path }
+    extra_args = {}
+  end
+
+  local result = exec_lua(function(cmd, extra_args, body_src, ...)
+    local body = assert(loadstring(body_src))
+    local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
+    local got = body(sess, ...)
+    sess:close()
+    return got
+  end, cmd, extra_args, string.dump(body), ...)
+
+  M.sleep(200)
+  if wire_path then os.remove(wire_path) end
+  return result
+end
+
+--- Spawn a fake-kak shell script and run `body(sess, captured, ...)` in
+--- the child. `sess` is a raw `kak.ui.json_rpc.Connection`; `captured`
+--- is appended `{method, params}` for each inbound NOTIFY. Drains 200 ms.
+--- @param script string
+--- @param body fun(sess: any, captured: table, ...): any
+--- @return any
+function M.with_fake_kak(script, body, ...)
+  local fake_path = M.write_executable(script)
+  local result = exec_lua(function(fake_path, body_src, ...)
+    local body = assert(loadstring(body_src))
+    local rpc = require('kak.ui.json_rpc')
+    local captured = {}
+    local sess = rpc.spawn({ fake_path }, {
+      dispatchers = {
+        on_notify = function(method, params) captured[#captured + 1] = { method, params } end,
+        on_request = function() end,
+        on_exit = function() end,
+        on_error = function() end,
+      },
+    })
+    local got = body(sess, captured, ...)
+    sess:terminate()
+    return got
+  end, fake_path, string.dump(body), ...)
+
+  M.sleep(200)
+  os.remove(fake_path)
+  return result
 end
 
 return M

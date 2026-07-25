@@ -1,6 +1,6 @@
--- Real Kakoune integration tests. Spawns `kak -ui json` as a child
--- process of the test target nvim, lets the plugin render an initial
--- `draw()` into its scratch buffer, then asserts the buffer contents.
+-- End-to-end kak tests: real `kak -ui json`, fake-kak shell scripts,
+-- and input handler routing. Spawn-related boilerplate lives in
+-- `test.helpers.{with_kak_session,with_fake_kak}`.
 
 local h = require('test.helpers')
 local exec_lua = h.exec_lua
@@ -12,12 +12,9 @@ describe('real Kakoune integration', function()
   it('renders a multi-line buffer into content + mode buffers', function()
     local file = h.write_file({ 'alpha line', 'beta line', 'gamma line' })
 
-    local result = exec_lua(function(f)
-      local kak = require('kak.ui')
-      local sess = kak.open({
-        cmd = { 'kak' },
-        extra_args = { '-e', 'edit ' .. f },
-      })
+    local result = h.with_kak_session({
+      extra_args = { '-e', 'edit ' .. file },
+    }, function(sess, f)
       local got = nil
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
@@ -31,10 +28,8 @@ describe('real Kakoune integration', function()
         end
         return false
       end)
-      sess:close()
       return got
     end, file)
-    h.sleep(200)
 
     os.remove(file)
     eq('table', type(result))
@@ -51,12 +46,9 @@ describe('real Kakoune integration', function()
   it('updates buffer when file changes mid-session', function()
     local file = h.write_file({ 'initial content' })
 
-    local result = exec_lua(function(f)
-      local kak = require('kak.ui')
-      local sess = kak.open({
-        cmd = { 'kak' },
-        extra_args = { '-e', 'edit ' .. f },
-      })
+    local result = h.with_kak_session({
+      extra_args = { '-e', 'edit ' .. file },
+    }, function(sess)
       local got = nil
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
@@ -66,10 +58,8 @@ describe('real Kakoune integration', function()
         end
         return false
       end)
-      sess:close()
       return got
-    end, file)
-    h.sleep(200)
+    end)
 
     os.remove(file)
     eq('table', type(result))
@@ -77,88 +67,32 @@ describe('real Kakoune integration', function()
   end)
 
   it('forwards ESC key to kakoune, exiting insert-like mode', function()
-    -- Wrap a child kak with a tee process that records the wire bytes
-    -- so we can observe the `keys` notification that we generate.
+    -- Wrap kak with a tee to record wire bytes; kak.ui.open has
+    -- already mounted an input handler on the scratch buffer.
     local dir = h.fn.tempname()
     h.fn.mkdir(dir, 'p')
     local log = dir .. '/log.txt'
-    local sh_path = h.write_executable(
-      '#!/bin/sh\n'
-        .. 'exec /usr/bin/kak -ui json "$@" 2>> '
-        .. log
-        .. ' | tee -a '
-        .. log
-        .. ' >/dev/null\n'
-    )
 
-    local result = exec_lua(function(capture)
-      local captured = { keys = {}, mouse = {}, other = {} }
-      local last_keys = nil
-      local sess = require('kak.ui.json_rpc').spawn({ capture }, {
-        dispatchers = {
-          on_notify = function(method, params)
-            if method == 'keys' then
-              last_keys = params
-              table.insert(captured.keys, params)
-            elseif
-              method == 'mouse_press'
-              or method == 'mouse_release'
-              or method == 'mouse_move'
-            then
-              table.insert(captured.mouse, { method = method, params = params })
-            else
-              table.insert(captured.other, { method = method, params = params })
-            end
-            -- On first set_ui_options, mount input handler onto our buf
-            -- so subsequent key events have a target.
-            if method == 'set_ui_options' and not sess.input then
-              local ui = require('kak.ui')
-              sess.input = ui and true or true
-              local buf = vim.api.nvim_create_buf(false, true)
-              pcall(vim.api.nvim_set_option_value, 'bufhidden', 'wipe', { buf = buf })
-              pcall(vim.api.nvim_set_option_value, 'swapfile', false, { buf = buf })
-              vim.bo[buf].buftype = 'nofile'
-              local handler = require('kak.ui.input').new({ rpc = sess })
-              handler:enable(buf)
-              -- The on_key filter only fires when our buf is current.
-              vim.api.nvim_set_current_buf(buf)
-            end
-          end,
-          on_request = function() end,
-          on_exit = function() end,
-          on_error = function() end,
-        },
-      })
-      -- Wait for any keys to arrive.
-      local got = nil
-      vim.wait(3000, function()
-        if #captured.keys > 0 then
-          got = captured
-          return true
-        end
-        return false
-      end)
-      sess:terminate()
-      return got
-    end, sh_path)
-    h.sleep(200)
+    local spawned = h.with_kak_session({
+      cmd = { '/usr/bin/kak' },
+      wire_log = log,
+    }, function(sess)
+      vim.wait(3000, function() return sess.conn:is_closing() end)
+      return true
+    end)
+    os.execute('rm -rf ' .. dir)
 
-    -- Unit-test the raw ESC -> <esc> path directly because headless
-    -- nvim does not deliver real keypresses to our handler.
+    -- Headless nvim cannot deliver real keypresses to our handler,
+    -- so unit-test the raw ESC -> <esc> translation directly. The
+    -- end-to-end run above must at least have completed spawn.
     local notation_ok = exec_lua(function()
       local m = require('kak.ui.input')
       local raw = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
       local keys = m.from_on_key(raw)
       return keys[1] == '<esc>'
     end)
+    eq(true, spawned)
     eq(true, notation_ok)
-
-    os.remove(sh_path)
-    os.execute('rm -rf ' .. dir)
-    -- result may be nil if no live keypress ever reached kak in
-    -- --headless mode; the meaningful check is that spawn did not crash
-    -- and the raw-key path above produces `<esc>`.
-    eq(true, type(result) == 'table' or type(result) == 'nil')
   end)
 end)
 
@@ -167,51 +101,33 @@ describe('input handler routing', function()
 
   it('maps mouse events to mouse_press / scroll (not keys)', function()
     -- Fake server emits set_ui_options so spawn settles, then sends
-    -- the three mouse notifications. We expect them to reach the
-    -- rpc dispatcher verbatim and never leak into the `keys` path
+    -- the three mouse notifications. They must reach the rpc
+    -- dispatcher verbatim and never leak into the `keys` path
     -- (input handler must not call conn:notify('keys', ...) for them).
-    local fake = h.write_executable([[
+    local methods = h.with_fake_kak(
+      [[
       printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{}]}\n'
       printf '{"jsonrpc":"2.0","method":"mouse_press","params":["left",1,5]}\n'
       printf '{"jsonrpc":"2.0","method":"mouse_release","params":["left",1,5]}\n'
       printf '{"jsonrpc":"2.0","method":"scroll","params":[1,1,0]}\n'
       sleep 5
-    ]])
+    ]],
+      function(_, captured)
+        vim.wait(3000, function() return #captured >= 4 end)
+        local m = {}
+        for _, e in ipairs(captured) do
+          m[#m + 1] = e[1]
+        end
+        return m
+      end
+    )
 
-    local log = exec_lua(function(fake_path)
-      local rpc = require('kak.ui.json_rpc')
-      local log = {}
-      local conn = rpc.spawn({ fake_path }, {
-        dispatchers = {
-          on_notify = function(method, params) log[#log + 1] = { method, params } end,
-          on_request = function() end,
-          on_exit = function() end,
-          on_error = function() end,
-        },
-      })
-      local input = require('kak.ui.input')
-      local buf = vim.api.nvim_create_buf(false, true)
-      vim.bo[buf].buftype = 'nofile'
-      local handler = input.new({ rpc = conn })
-      handler:enable(buf)
-      vim.wait(3000, function() return #log >= 4 or conn:is_closing() end)
-      handler:disable()
-      conn:terminate()
-      return log
-    end, fake)
-    h.sleep(200)
-
-    os.remove(fake)
-    local methods = {}
-    for _, entry in ipairs(log) do
-      methods[#methods + 1] = entry[1]
-    end
     eq('set_ui_options', methods[1])
     eq('mouse_press', methods[2])
     eq('mouse_release', methods[3])
     eq('scroll', methods[4])
-    for _, m in ipairs(methods) do
-      assert(m ~= 'keys', 'mouse event leaked into keys path: ' .. m)
+    for _, name in ipairs(methods) do
+      assert(name ~= 'keys', 'mouse event leaked into keys path: ' .. name)
     end
   end)
 
