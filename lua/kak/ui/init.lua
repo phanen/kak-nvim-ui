@@ -84,10 +84,12 @@ function M.current() return current_session end
 function M.set_current(sess) current_session = sess end
 
 --- Iterate every live session. Internal: only used by VimLeavePre.
----@return fun(): integer?, kak.ui.Session
+--- Returns the 3-tuple `(iter, state, init)` from `pairs(SESSIONS)` so
+--- `for _, s in m._iter() do ... end` works -- a plain `return it`
+--- would only yield 1 value (the iterator), forcing the for loop's
+--- state to nil and failing on the first call.
 function M._iter()
-  local it = pairs(SESSIONS) --[[@as fun(): integer?, kak.ui.Session]]
-  return it
+  return pairs(SESSIONS) --[[@as fun(): integer?, kak.ui.Session, integer?, kak.ui.Session]]
 end
 
 --- Snapshot of the DAEMONS table for tests.

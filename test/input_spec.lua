@@ -634,4 +634,172 @@ describe('input handler routing', function()
     h.eq('replace', mode.replace)
     h.eq('insert', mode.multi)
   end)
+
+  -- Regression for the `:q` "dummy key" symptom. Before this fix
+  -- the on_key safety net scheduled the dead session's close but
+  -- DROPPED the triggering key (return '') -- so the user's first
+  -- key after `:q` was lost AND subsequent keys routed to the new
+  -- current_session only AFTER vim.schedule fired (next tick).
+  -- With a survivor available, the fix synchronously flips
+  -- `current_session` to the survivor AND forwards the trapped
+  -- keypress to the survivor's conn inline. Net effect: zero keys
+  -- lost on `:q`, no "must type a dummy key" symptom.
+  it('on_key safety net: dead current forwards to survivor instead of dropping', function()
+    local result = h.exec_lua(function()
+      local ui = require('kak.ui')
+      local input = require('kak.ui.input')
+
+      local dead_buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[dead_buf].buftype = 'nofile'
+      local survivor_buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[survivor_buf].buftype = 'nofile'
+
+      -- Spy on the survivor's conn: capture every 'keys' notify so
+      -- we can assert the trapped keypress was forwarded.
+      local survivor_keys = {}
+      local dead_close_called = 0
+      local dead_close_scheduled = 0
+
+      local dead_conn = {
+        is_closing = function() return true end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local dead_session = {
+        id = dead_buf,
+        conn = dead_conn,
+        handlers = nil,
+        surface = nil,
+        input = nil,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          dead_close_called = dead_close_called + 1
+          if self.closed then return end
+          self.closed = true
+        end,
+      }
+      ui._sessions()[dead_buf] = dead_session
+
+      local survivor_conn = {
+        is_closing = function() return false end,
+        terminate = function() end,
+        notify = function(self, method, params)
+          if method == 'keys' then survivor_keys[#survivor_keys + 1] = params end
+        end,
+      }
+      -- The survivor must have a VALID nvim window so the safety
+      -- net's survivor-search (which checks nvim_win_is_valid on
+      -- content_win) actually accepts it. Open survivor_buf in a
+      -- fresh split so we get a real window id without disturbing
+      -- the test's current window (which holds dead_buf).
+      vim.cmd('vsplit')
+      local survivor_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(survivor_win, survivor_buf)
+      local survivor_session = {
+        id = survivor_buf,
+        conn = survivor_conn,
+        handlers = nil,
+        surface = { content_win = survivor_win, content_buf = survivor_buf },
+        input = nil,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          if self.closed then return end
+          self.closed = true
+        end,
+      }
+      ui._sessions()[survivor_buf] = survivor_session
+
+      local live_handler_conn = {
+        is_closing = function() return false end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local handler = input.new({ rpc = live_handler_conn })
+      handler:enable()
+
+      -- The user is in the DEAD window.
+      vim.api.nvim_set_current_buf(dead_buf)
+      ui.set_current(dead_session)
+
+      local fn = assert(input._on_key_fn(), 'global on_key should be installed')
+
+      -- Track whether the dead close ran BEFORE the keypress was
+      -- returned. It MUST NOT have: the safety net schedules the
+      -- close (vim.schedule), it does not run it synchronously. The
+      -- keypress must be forwarded to the survivor's conn during
+      -- this synchronous call.
+      local ret = fn('', 'i')
+
+      local csess = ui.current()
+      local current_after_sync_id = csess and csess.id or nil
+      local current_after_sync_closed = nil
+      if csess then current_after_sync_closed = csess.closed end
+      local survivor_keys_sync = #survivor_keys
+      local keys_copy = {}
+      for i, k in ipairs(survivor_keys) do
+        keys_copy[i] = k[1]
+      end
+      local dead_closed_sync = dead_session.closed
+      local dead_close_called_sync = dead_close_called
+
+      vim.wait(500, function() return dead_session.closed end)
+
+      local csess2 = ui.current()
+      local current_after_async_id = csess2 and csess2.id or nil
+      local survivor_keys_async = #survivor_keys
+      local dead_closed_async = dead_session.closed
+      local dead_close_called_async = dead_close_called
+
+      -- Tear down in pcall so any error from `handler:disable()` (the
+      -- module-level on_key/paste refcounts may underflow if a
+      -- previous test in this file left them in a stale state) does
+      -- not mask the assertions we already computed above.
+      pcall(function()
+        handler:disable()
+        ui.set_current(nil)
+        ui._sessions()[dead_buf] = nil
+        ui._sessions()[survivor_buf] = nil
+        if survivor_win and vim.api.nvim_win_is_valid(survivor_win) then
+          pcall(vim.api.nvim_win_close, survivor_win, true)
+        end
+      end)
+
+      return {
+        survivor_buf = survivor_buf,
+        dead_buf = dead_buf,
+        ret = ret,
+        current_after_sync_id = current_after_sync_id,
+        current_after_sync_closed = current_after_sync_closed,
+        current_after_async_id = current_after_async_id,
+        survivor_keys_sync = survivor_keys_sync,
+        survivor_keys_async = survivor_keys_async,
+        keys_copy = keys_copy,
+        dead_closed_sync = dead_closed_sync,
+        dead_closed_async = dead_closed_async,
+        dead_close_called_sync = dead_close_called_sync,
+        dead_close_called_async = dead_close_called_async,
+      }
+    end)
+    -- vim.on_key REQUIRES return '' -- the safety net still drops
+    -- from nvim's perspective, but FORWARDS to the survivor's
+    -- conn inline so the user's input isn't lost.
+    h.eq('', result.ret)
+    -- Inline switch: current_session is now the survivor (no
+    -- "must type a dummy key" gap).
+    h.eq(result.survivor_buf, result.current_after_sync_id)
+    h.eq(false, result.current_after_sync_closed)
+    -- The trapped keypress was forwarded to the survivor's conn
+    -- DURING the synchronous on_key call (not after).
+    h.eq(true, result.survivor_keys_sync >= 1)
+    h.eq('i', result.keys_copy[1])
+    -- The dead session's close was SCHEDULED (not run sync).
+    h.eq(false, result.dead_closed_sync)
+    h.eq(0, result.dead_close_called_sync)
+    -- After pumping the event loop, the scheduled close fired
+    -- exactly once.
+    h.eq(true, result.dead_closed_async)
+    h.eq(1, result.dead_close_called_async)
+  end)
 end)

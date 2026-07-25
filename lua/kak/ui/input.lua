@@ -268,17 +268,19 @@ function Handler:enable()
         -- nil) but `on_exit` hasn't fired yet. During that gap the
         -- user is in a dead window with no live input routing --
         -- returning '' drops the key (the only legal on_key return;
-        -- nvim throws "return string must be empty" otherwise), but
-        -- the next keypress must still land somewhere sane. Detect
-        -- the dead session from the still-resident SESSIONS entry
-        -- (or `current()` if the buffer no longer belongs to a
-        -- session) and schedule its close so `current_session`
-        -- flips to a survivor synchronously via the Lua-var write
-        -- in `Session:close` + the dead window is removed next
-        -- tick. The user loses THIS keypress (it was going nowhere
-        -- anyway), then the scheduled close fires, and the NEXT
-        -- keypress routes to the survivor through the live on_key
-        -- path. NOT trapped; the key is dropped not errored.
+        -- nvim throws "return string must be empty" otherwise), so
+        -- the user must type a "dummy" key first to let the safety
+        -- net schedule the close + the next key then routes through
+        -- the live session. Avoid the dummy: detect the dead session,
+        -- synchronously find a live SURVIVOR (the same survivor-
+        -- lookup `Session:close` does), flip `current_session` to
+        -- it INLINE, and FORWARD this keypress to the survivor's
+        -- conn. Schedule the dead session's `close()` for the next
+        -- tick (the survivor-focus move, dead-window removal, and
+        -- daemon kill all live there; the `closed` guard makes the
+        -- eventual real `on_exit` close idempotent). If there is no
+        -- survivor (last session), the keypress falls through to
+        -- '' as before -- there's nowhere to forward it.
         local m = require('kak.ui')
         local dead = m.session_for_buf(cur)
         if not dead or dead.closed or not dead.conn or not dead.conn:is_closing() then
@@ -296,16 +298,57 @@ function Handler:enable()
           end
         end
         if dead and not dead.closed and dead.conn and dead.conn:is_closing() then
-          log.debug('on_key: dead session, scheduling close + drop', {
-            cur = cur,
-            dead_id = dead.id,
-          })
-          local d = dead
-          vim.schedule(function()
-            pcall(function() d:close() end)
-          end)
+          -- Synchronous survivor lookup (mirrors Session:close's
+          -- selection loop): first live, non-dead, non-closing
+          -- session whose content_win is still valid. Same Lua-var
+          -- write as close() -- safe from on_key context.
+          local survivor = nil
+          for _, s in m._iter() do
+            if
+              s ~= dead
+              and not s.closed
+              and s.conn
+              and not s.conn:is_closing()
+              and s.surface
+              and s.surface.content_win
+              and vim.api.nvim_win_is_valid(s.surface.content_win)
+            then
+              survivor = s
+              break
+            end
+          end
+          if survivor then
+            log.debug('on_key: dead session, switching to survivor + forwarding', {
+              cur = cur,
+              dead_id = dead.id,
+              survivor_id = survivor.id,
+            })
+            m.set_current(survivor)
+            -- Schedule the dead session's close for cleanup. By the
+            -- time it runs, current_session is already the survivor
+            -- (so close()'s survivor-lookup finds nothing and skips
+            -- the re-switch). The `closed` guard makes a later real
+            -- on_exit -> close idempotent.
+            local d = dead
+            vim.schedule(function()
+              pcall(function() d:close() end)
+            end)
+            -- Forward THIS keypress to the survivor now, inline.
+            sess = survivor
+            -- Fall through to the live-session notify path below.
+          else
+            log.debug('on_key: dead session, no survivor, drop', {
+              cur = cur,
+              dead_id = dead.id,
+            })
+            local d = dead
+            vim.schedule(function()
+              pcall(function() d:close() end)
+            end)
+            return ''
+          end
         end
-        return ''
+        if not sess then return '' end
       end
       log.trace('on_key', {
         typed = typed:sub(1, 20),
@@ -428,25 +471,43 @@ function Handler:disable()
   self.enabled = false
 
   -- on_key listener is process-global and refcounted; only the
-  -- LAST enabled handler (refcount -> 0) tears it down.
-  on_key_refcount = on_key_refcount - 1
+  -- LAST enabled handler (refcount -> 0) tears it down. Guard
+  -- against refcount underflow: if a previous test in this file
+  -- (or an out-of-band enable/disable pair) left the refcount
+  -- already at 0, this disable() must NOT touch vim.on_key (the
+  -- namespace was cleared by the previous disable and re-clearing
+  -- would be a no-op, but the symmetry check below needs to be
+  -- robust). Bail before decrementing.
   if on_key_refcount <= 0 then
-    on_key_refcount = 0
-    if on_key_ns and vim.on_key then vim.on_key(nil, on_key_ns) end
-    on_key_ns = nil
-    on_key_fn = nil
-    on_key_installed = false
+    -- Already at zero: stale state, nothing to undo.
+  else
+    on_key_refcount = on_key_refcount - 1
+    if on_key_refcount <= 0 then
+      on_key_refcount = 0
+      if on_key_ns and vim.on_key then vim.on_key(nil, on_key_ns) end
+      on_key_ns = nil
+      on_key_fn = nil
+      on_key_installed = false
+    end
   end
 
   -- Same scheme for the paste override: only restore `vim.paste`
   -- once every handler has gone away, otherwise a sibling session's
-  -- `disable()` would yank the override out from under it.
-  paste_refcount = paste_refcount - 1
+  -- `disable()` would yank the override out from under it. Guard
+  -- against refcount underflow AND against a nil paste_orig (a
+  -- previous test's install may have set `paste_installed = true`
+  -- but its `paste_orig` capture was lost across test files; setting
+  -- `vim.paste = nil` would break subsequent paste calls).
   if paste_refcount <= 0 then
-    paste_refcount = 0
-    if paste_orig then vim.paste = paste_orig end
-    paste_orig = nil
-    paste_installed = false
+    -- Already at zero: stale state, nothing to undo.
+  else
+    paste_refcount = paste_refcount - 1
+    if paste_refcount <= 0 then
+      paste_refcount = 0
+      if paste_orig then vim.paste = paste_orig end
+      paste_orig = nil
+      paste_installed = false
+    end
   end
 
   for _, lhs in ipairs(self.mouse_maps) do
