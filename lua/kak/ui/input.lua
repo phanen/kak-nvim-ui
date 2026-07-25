@@ -266,14 +266,19 @@ function Handler:enable()
         -- a window where the client process has already exited
         -- (`is_closing()` -> true, `session_for_current_buf` returns
         -- nil) but `on_exit` hasn't fired yet. During that gap the
-        -- user is in a dead window with no live input routing; the
-        -- OLD `return ''` would drop every key and trap them. Detect
+        -- user is in a dead window with no live input routing --
+        -- returning '' drops the key (the only legal on_key return;
+        -- nvim throws "return string must be empty" otherwise), but
+        -- the next keypress must still land somewhere sane. Detect
         -- the dead session from the still-resident SESSIONS entry
         -- (or `current()` if the buffer no longer belongs to a
         -- session) and schedule its close so `current_session`
-        -- flips to a survivor + the dead window is removed next
-        -- tick. Also pass THIS key through to nvim so the user can
-        -- act during the one-tick scheduling gap (`:wincmd`, `:bd`).
+        -- flips to a survivor synchronously via the Lua-var write
+        -- in `Session:close` + the dead window is removed next
+        -- tick. The user loses THIS keypress (it was going nowhere
+        -- anyway), then the scheduled close fires, and the NEXT
+        -- keypress routes to the survivor through the live on_key
+        -- path. NOT trapped; the key is dropped not errored.
         local m = require('kak.ui')
         local dead = m.session_for_buf(cur)
         if not dead or dead.closed or not dead.conn or not dead.conn:is_closing() then
@@ -291,7 +296,7 @@ function Handler:enable()
           end
         end
         if dead and not dead.closed and dead.conn and dead.conn:is_closing() then
-          log.debug('on_key: dead session, scheduling close + pass-through', {
+          log.debug('on_key: dead session, scheduling close + drop', {
             cur = cur,
             dead_id = dead.id,
           })
@@ -300,7 +305,7 @@ function Handler:enable()
             pcall(function() d:close() end)
           end)
         end
-        return typed
+        return ''
       end
       log.trace('on_key', {
         typed = typed:sub(1, 20),

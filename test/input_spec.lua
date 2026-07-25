@@ -382,13 +382,17 @@ describe('input handler routing', function()
   -- delayed or never fire (e.g. a grandchild inherited the pipe).
   -- During that gap, `session_for_current_buf` drops the dead
   -- session (its is_closing guard), so the global on_key listener
-  -- would return '' and trap the user. The safety net:
+  -- would just drop every key with no cleanup ever happening --
+  -- permanent trap. The safety net:
   --   1. detects a dead session (per cur-owner or current() fallback)
   --   2. schedules sess:close() so current_session flips to a
   --      survivor + the dead window is removed next tick
-  --   3. passes this key through (returns typed) so the user can
-  --      act during the one-tick scheduling gap
-  it('on_key safety net: dead current session gets scheduled close + pass-through', function()
+  --   3. returns '' (the ONLY valid vim.on_key return; nvim throws
+  --      "return string must be empty" on a non-empty return)
+  -- The user loses this one keypress (it was going nowhere anyway),
+  -- then the scheduled close runs and the NEXT keypress routes to
+  -- the survivor through the live on_key path.
+  it('on_key safety net: dead current session gets scheduled close + drop', function()
     local result = h.exec_lua(function()
       local ui = require('kak.ui')
       local input = require('kak.ui.input')
@@ -463,10 +467,11 @@ describe('input handler routing', function()
         close_log = close_log,
       }
     end)
-    -- 1. Pass-through: the key returns AS-IS, not the empty drop.
-    --    The trap would be returning '' -- the safety net returns
-    --    the typed bytes so nvim processes the key.
-    h.eq('\27', result.ret)
+    -- 1. Drop: the key is dropped (''), NOT returned to nvim.
+    --    Returning a non-empty string from on_key is invalid --
+    --    nvim throws "return string must be empty" -- so the
+    --    safety net MUST return ''.
+    h.eq('', result.ret)
     -- 2. The close was NOT called synchronously (it's behind
     --    vim.schedule). Confirm: closed=false right after on_key
     --    returns.
@@ -493,7 +498,7 @@ describe('input handler routing', function()
   -- OWNER of the current buffer (not just `current()`), the
   -- per-cur `session_for_buf` lookup is the path that finds it.
   -- The current() fallback is a secondary path; both must converge
-  -- on the same scheduled close + pass-through behavior.
+  -- on the same scheduled close + drop behavior.
   it('on_key safety net: dead session that owns cur is found via session_for_buf', function()
     local result = h.exec_lua(function()
       local ui = require('kak.ui')
@@ -556,7 +561,7 @@ describe('input handler routing', function()
         waited = waited,
       }
     end)
-    h.eq('\27', result.ret)
+    h.eq('', result.ret)
     h.eq(false, result.closed_sync)
     h.eq(true, result.waited)
     h.eq(true, result.closed_async)

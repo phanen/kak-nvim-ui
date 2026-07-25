@@ -46,93 +46,65 @@ describe('kak.ui.windowing', function()
   end)
 
   describe('inject_args', function()
-    it(
-      'sets NVIM env and emits exactly one -e with source + require-module + windowing_module',
-      function()
-        local result = h.exec_lua(function()
-          local w = require('kak.ui.windowing')
-          local opts = w.inject_args({})
-          return {
-            env_NVIM = opts.env.NVIM,
-            extra_args = opts.extra_args,
-          }
-        end)
-        assert(
-          type(result.env_NVIM) == 'string' and result.env_NVIM ~= '',
-          'expected NVIM set, got: ' .. vim.inspect(result.env_NVIM)
-        )
-        -- Default path (no caller -e): we emit `-e` followed by the
-        -- standalone preamble.
-        h.eq(2, #result.extra_args)
-        h.eq('-e', result.extra_args[1])
-        local payload = result.extra_args[2]
-        assert(type(payload) == 'string', 'expected payload to be a string')
-        assert(payload:find('source ', 1, true) ~= nil, 'payload missing source: ' .. payload)
-        assert(
-          payload:find('kak/nvim.kak', 1, true) ~= nil,
-          'payload missing kak/nvim.kak path: ' .. payload
-        )
-        -- Regression for the v1 bug: without `require-module nvim`,
-        -- `provide-module` only registers the body and
-        -- `define-command` never runs.
-        assert(
-          payload:find('require-module nvim', 1, true) ~= nil,
-          'payload missing require-module nvim: ' .. payload
-        )
-        assert(
-          payload:find('set global windowing_module nvim', 1, true) ~= nil,
-          'payload missing windowing_module override: ' .. payload
-        )
-      end
-    )
-
-    it('folds the source preamble into a caller-supplied -e payload', function()
-      local result = h.exec_lua(function()
-        local w = require('kak.ui.windowing')
-        local opts = w.inject_args({ extra_args = { '-e', 'echo hi', '--foo' } })
-        return opts.extra_args
-      end)
-      h.eq('-e', result[1])
-      assert(result[2]:find('source ', 1, true) ~= nil, '2nd entry should be the source payload')
-      assert(
-        result[2]:find('require-module nvim', 1, true) ~= nil,
-        '2nd entry should require-module nvim'
-      )
-      assert(result[2]:find('echo hi', 1, true) ~= nil, 'caller payload should survive')
-      -- Caller entries that aren't `-e` are preserved at the tail;
-      -- the original `echo hi` arg (now folded into result[2]) is
-      -- NOT duplicated.
-      h.eq('--foo', result[3])
-      h.eq(3, #result)
-    end)
-
-    it('folds the source preamble into a caller -e with no space (combined form)', function()
-      local result = h.exec_lua(function()
-        local w = require('kak.ui.windowing')
-        local opts = w.inject_args({ extra_args = { '-eecho hi' } })
-        return opts.extra_args
-      end)
-      h.eq(2, #result)
-      h.eq('-e', result[1])
-      assert(result[2]:find('source ', 1, true) ~= nil, 'payload missing source')
-      assert(
-        result[2]:find('require-module nvim', 1, true) ~= nil,
-        'payload missing require-module'
-      )
-      assert(result[2]:find('echo hi', 1, true) ~= nil, 'caller payload should survive')
-    end)
-
-    it('emits a single -e even when caller passes no extra_args', function()
+    it('sets NVIM env on a fresh opts table', function()
       local result = h.exec_lua(function()
         local w = require('kak.ui.windowing')
         local opts = w.inject_args({})
-        local dash_e_count = 0
-        for _, a in ipairs(opts.extra_args) do
-          if a == '-e' or a:sub(1, 2) == '-e' then dash_e_count = dash_e_count + 1 end
-        end
-        return dash_e_count
+        return {
+          env_NVIM = opts.env.NVIM,
+          extra_args = opts.extra_args,
+        }
       end)
-      h.eq(1, result)
+      assert(
+        type(result.env_NVIM) == 'string' and result.env_NVIM ~= '',
+        'expected NVIM set, got: ' .. vim.inspect(result.env_NVIM)
+      )
+    end)
+
+    it('does NOT emit any -e preamble (client inherits from daemon)', function()
+      local result = h.exec_lua(function()
+        local w = require('kak.ui.windowing')
+        -- Both no-extra_args and explicit-empty cases must produce an
+        -- empty extra_args list (or nil).
+        local empty = w.inject_args({}).extra_args or {}
+        local explicit_nil = w.inject_args({ extra_args = nil }).extra_args or {}
+        local dash_e_in_empty = 0
+        local dash_e_in_explicit = 0
+        for _, a in ipairs(empty) do
+          if a == '-e' or a:sub(1, 2) == '-e' then dash_e_in_empty = dash_e_in_empty + 1 end
+        end
+        for _, a in ipairs(explicit_nil) do
+          if a == '-e' or a:sub(1, 2) == '-e' then dash_e_in_explicit = dash_e_in_explicit + 1 end
+        end
+        return {
+          empty_n = #empty,
+          explicit_n = #explicit_nil,
+          empty_dash_e = dash_e_in_empty,
+          explicit_dash_e = dash_e_in_explicit,
+        }
+      end)
+      -- The client MUST NOT re-source the windowing module; the
+      -- daemon did it once at startup. Injecting a 2nd `-e` here
+      -- would cause `provide-module: module 'nvim' already defined`
+      -- every time a second client joins.
+      h.eq(0, result.empty_n)
+      h.eq(0, result.explicit_n)
+      h.eq(0, result.empty_dash_e)
+      h.eq(0, result.explicit_dash_e)
+    end)
+
+    it('passes caller extra_args through verbatim (no folding)', function()
+      local result = h.exec_lua(function()
+        local w = require('kak.ui.windowing')
+        local caller_args = { '-e', 'echo hi', '--foo', '-eset global kak_session baz' }
+        local out = w.inject_args({ extra_args = caller_args }).extra_args
+        return out
+      end)
+      h.eq(4, #result)
+      h.eq('-e', result[1])
+      h.eq('echo hi', result[2])
+      h.eq('--foo', result[3])
+      h.eq('-eset global kak_session baz', result[4])
     end)
 
     it('does not mutate a caller-supplied env table', function()
@@ -155,39 +127,67 @@ describe('kak.ui.windowing', function()
       assert(result.opts_NVIM ~= nil and result.opts_NVIM ~= '', 'NVIM missing on returned opts')
     end)
 
-    it('is idempotent across two consecutive calls (single -e, args survive)', function()
+    it('is idempotent across two consecutive calls (NVIM stable)', function()
       local result = h.exec_lua(function()
         local w = require('kak.ui.windowing')
         local first = w.inject_args({ extra_args = { '-e', 'echo first' } })
         local second = w.inject_args({ extra_args = { '-e', 'echo second' } })
-        local function count_dash_e(t)
-          local n = 0
-          for _, a in ipairs(t) do
-            if a == '-e' or a:sub(1, 2) == '-e' then n = n + 1 end
-          end
-          return n
-        end
         return {
-          first_n = #first.extra_args,
-          second_n = #second.extra_args,
-          first_dash_e = count_dash_e(first.extra_args),
-          second_dash_e = count_dash_e(second.extra_args),
-          first_has_first = first.extra_args[2]
-            and first.extra_args[2]:find('echo first', 1, true) ~= nil,
-          second_has_second = second.extra_args[2]
-            and second.extra_args[2]:find('echo second', 1, true) ~= nil,
+          first_has_first = first.extra_args[2] == 'echo first',
+          second_has_second = second.extra_args[2] == 'echo second',
           shared_NVIM = first.env.NVIM == second.env.NVIM,
         }
       end)
-      -- Caller passes {-e, payload} (2 args); merged with our preamble
-      -- it stays 2 args.
-      h.eq(2, result.first_n)
-      h.eq(2, result.second_n)
-      h.eq(1, result.first_dash_e)
-      h.eq(1, result.second_dash_e)
       h.eq(true, result.first_has_first)
       h.eq(true, result.second_has_second)
       h.eq(true, result.shared_NVIM)
+    end)
+  end)
+
+  describe('daemon_preamble', function()
+    it('contains source + require-module + windowing_module', function()
+      local preamble = h.exec_lua(
+        function() return require('kak.ui.windowing').daemon_preamble() end
+      )
+      assert(type(preamble) == 'string' and preamble ~= '', 'preamble should be non-empty')
+      assert(preamble:find('source ', 1, true) ~= nil, 'preamble missing source: ' .. preamble)
+      assert(
+        preamble:find('kak/nvim.kak', 1, true) ~= nil,
+        'preamble missing kak/nvim.kak path: ' .. preamble
+      )
+      -- Regression for the v1 bug: without `require-module nvim`,
+      -- `provide-module` only registers the body and `define-command`
+      -- never runs.
+      assert(
+        preamble:find('require-module nvim', 1, true) ~= nil,
+        'preamble missing require-module nvim: ' .. preamble
+      )
+      assert(
+        preamble:find('set global windowing_module nvim', 1, true) ~= nil,
+        'preamble missing windowing_module override: ' .. preamble
+      )
+    end)
+  end)
+
+  describe('daemon_argv', function()
+    it('emits kak -d -s <session> -E <preamble>', function()
+      local argv = h.exec_lua(
+        function() return require('kak.ui.windowing').daemon_argv('mysession') end
+      )
+      h.eq(6, #argv)
+      h.eq('kak', argv[1])
+      h.eq('-d', argv[2])
+      h.eq('-s', argv[3])
+      h.eq('mysession', argv[4])
+      h.eq('-E', argv[5])
+      assert(type(argv[6]) == 'string' and argv[6] ~= '', 'preamble should be non-empty')
+      -- The preamble must contain the source + require-module
+      -- hooks; the client relies on inheriting them.
+      assert(argv[6]:find('source ', 1, true) ~= nil, 'daemon argv[6] missing source')
+      assert(
+        argv[6]:find('require-module nvim', 1, true) ~= nil,
+        'daemon argv[6] missing require-module'
+      )
     end)
   end)
 

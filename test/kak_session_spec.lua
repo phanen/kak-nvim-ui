@@ -134,10 +134,26 @@ describe('kak renders buffer + grid', function()
   end)
 
   it('places the cursor on the line that kak selects', function()
-    -- `select 1.0` (0-indexed line) jumps cursor to line 2 column 0.
+    -- `select 2.1,2.1` is a degenerate range that resolves (1-indexed
+    -- -> 0-indexed via `str_to_int - 1` in selection.cc) to
+    -- (line=1, col=0) 0-indexed = the "two" line. The content row
+    -- shows `^two` with the cursor glyph prepended, and the status
+    -- float shows "scratch" notice (because the buffer has been
+    -- modified by `edit` but not yet saved) -- the cursor's line:col
+    -- is encoded in the modelinefmt but the test only needs to
+    -- verify the cursor visual at row 2.
+    --
+    -- The original test sent the malformed `select 1.0` (single
+    -- coordinate, kakoune throws "does not follow <line>.<column>,
+    -- <line>.<column> format"). The test passed only because the
+    -- status error message happened to contain "1:1" as a
+    -- substring (via the long preamble-injected command line). After
+    -- removing the preamble (Fix 3) the error no longer contained
+    -- "1:1" and the test reliably failed; the fix is a properly-
+    -- formed range + a check that doesn't depend on the error path.
     local file = tmp_with({ 'one', 'two', 'three' })
     h.with_kak_session({
-      extra_args = { '-e', 'edit ' .. file .. '; select 1.0' },
+      extra_args = { '-e', 'edit ' .. file .. '; select 2.1,2.1' },
       keep_open = true,
     }, function(sess)
       vim.wait(3000, function()
@@ -147,13 +163,16 @@ describe('kak renders buffer + grid', function()
     end)
 
     -- Cursor glyph `^` is auto-prepended to the focused row;
-    -- use {MATCH:two} not {MATCH:^two}. Status float at the last row.
+    -- use {MATCH:^two} for the cursor at line 2. Status float at
+    -- the last row carries the scratch-buffer notice rather than
+    -- the full modeline (since the buffer is modified but unnamed
+    -- here); assert that shape rather than the cursor digits.
     screen:expect([[
       {MATCH:one}
-      {MATCH:two}
+      {MATCH:%^two}
       {MATCH:three}
       {MATCH:.*~.*}|*20
-      {MATCH:.*1:1.*}
+      {MATCH:.*scratch.*}
     ]])
   end)
 end)

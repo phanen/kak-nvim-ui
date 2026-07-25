@@ -112,16 +112,6 @@ function M._gen_session()
   return string.format('kak-nvim-%d-%d', vim.fn.getpid(), SEQ)
 end
 
---- Build the kakoune startup preamble for the daemon / client: source
---- the nvim windowing module so `:new`, `:tabnew`, `focus` inside
---- this session shell back into the parent nvim.
----@return string
-local function daemon_preamble()
-  return 'source '
-    .. require('kak.ui.windowing').kak_script_path()
-    .. '; require-module nvim; set global windowing_module nvim'
-end
-
 --- Make sure a kakoune daemon exists for the given session name and
 --- remember it for cleanup.
 ---
@@ -132,6 +122,12 @@ end
 --- The daemon is killed explicitly via `Session:close()` once the
 --- last client for `<session>` goes away, and again on `VimLeavePre`
 --- as belt-and-suspenders.
+---
+--- The `-E <preamble>` payload sources + requires the `nvim`
+--- windowing module server-side; every client connecting to this
+--- session inherits those commands + the `windowing_module nvim`
+--- override. The client MUST NOT re-source the preamble
+--- (`provide-module` errors with `module 'nvim' already defined`).
 ---
 --- When the session name already exists (e.g. user runs `:Kak
 --- --session=foo` against a running foo), `kak -d -s foo` does NOT
@@ -145,7 +141,8 @@ end
 ---@param session string
 function M._ensure_daemon(session)
   if DAEMONS[session] and not DAEMONS[session]:is_closing() then return end
-  local argv = { 'kak', '-d', '-s', session, '-E', daemon_preamble() }
+  local windowing = require('kak.ui.windowing')
+  local argv = windowing.daemon_argv(session)
   local ok, sys_or_err = pcall(vim.system, argv, {
     stdout = false,
     stderr = false,
@@ -171,6 +168,7 @@ end
 ---@param opts kak.ui.OpenOpts?
 ---@return kak.ui.Session
 function M.open(opts)
+  log.debug('open start', { session = opts and opts.session, has_cmd = opts and opts.cmd ~= nil })
   opts = require('kak.ui.windowing').inject_args(opts)
   local cmd = opts.cmd or { 'kak' }
   local session = opts.session
@@ -183,7 +181,11 @@ function M.open(opts)
   -- confuse things, so we skip.
   if not is_fake then
     if not session or session == '' then session = M._gen_session() end
-    M._ensure_daemon(session)
+    local ok_d, err_d = pcall(M._ensure_daemon, session)
+    if not ok_d then
+      log.error('open: _ensure_daemon failed', { session = session, err = tostring(err_d) })
+      error(err_d)
+    end
     opts.session = session
   end
 
@@ -209,7 +211,13 @@ function M.open(opts)
   -- buffers before we spawn the child process, so handlers can attach
   -- the renderer to buffers that already have a home.
   local surface = surface_mod.new({ session = session })
-  surface:open({ session = session })
+  do
+    local ok, err = pcall(function() surface:open({ session = session }) end)
+    if not ok then
+      log.error('open: surface:open failed', { session = session, err = tostring(err) })
+      error(err)
+    end
+  end
   local content_bufnr = assert(surface.content_buf, 'Surface:open did not produce a content_buf')
 
   local h = handlers.new({
@@ -256,11 +264,26 @@ function M.open(opts)
   }
 
   ---@type kak.ui.json_rpc.Connection
-  local conn = json_rpc.spawn(argv, {
-    dispatchers = dispatchers,
-    cwd = opts.cwd,
-    env = opts.env,
-  })
+  local conn
+  do
+    local ok, err = pcall(
+      function()
+        conn = json_rpc.spawn(argv, {
+          dispatchers = dispatchers,
+          cwd = opts.cwd,
+          env = opts.env,
+        })
+      end
+    )
+    if not ok then
+      log.error('open: json_rpc.spawn failed', {
+        argv = argv,
+        session = session,
+        err = tostring(err),
+      })
+      error(err)
+    end
+  end
 
   local input_handler = input.new({ rpc = conn, surface = surface })
   input_handler:enable()
@@ -372,30 +395,42 @@ function M.open(opts)
 
   -- Per-session autocmds: keep the registration scoped to the
   -- augroup so disabling/closing one session doesn't disturb others.
-  local augroup =
-    vim.api.nvim_create_augroup('KakUiSession' .. tostring(content_bufnr), { clear = true })
+  local augroup
+  do
+    local ok, err = pcall(function()
+      augroup =
+        vim.api.nvim_create_augroup('KakUiSession' .. tostring(content_bufnr), { clear = true })
+      vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized' }, {
+        group = augroup,
+        buffer = content_bufnr,
+        callback = function() input_handler:report_resize() end,
+      })
+      vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
+        group = augroup,
+        buffer = content_bufnr,
+        callback = function() sess:close() end,
+      })
+      vim.api.nvim_create_autocmd('WinClosed', {
+        group = augroup,
+        pattern = tostring(surface.content_win),
+        callback = function() sess:close() end,
+      })
+      vim.api.nvim_create_autocmd('WinEnter', {
+        group = augroup,
+        buffer = content_bufnr,
+        callback = function() M.set_current(sess) end,
+      })
+    end)
+    if not ok then
+      log.error('open: autocmd install failed', {
+        session = session,
+        content_buf = content_bufnr,
+        err = tostring(err),
+      })
+      error(err)
+    end
+  end
   sess.augroup = augroup
-
-  vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized' }, {
-    group = augroup,
-    buffer = content_bufnr,
-    callback = function() input_handler:report_resize() end,
-  })
-  vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
-    group = augroup,
-    buffer = content_bufnr,
-    callback = function() sess:close() end,
-  })
-  vim.api.nvim_create_autocmd('WinClosed', {
-    group = augroup,
-    pattern = tostring(surface.content_win),
-    callback = function() sess:close() end,
-  })
-  vim.api.nvim_create_autocmd('WinEnter', {
-    group = augroup,
-    buffer = content_bufnr,
-    callback = function() M.set_current(sess) end,
-  })
 
   M.set_current(sess)
   return sess

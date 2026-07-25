@@ -3,6 +3,8 @@
 if vim.g.loaded_kak_ui == 1 then return end
 vim.g.loaded_kak_ui = 1
 
+local log = require('kak.ui.log').log
+
 vim.api.nvim_create_user_command('Kak', function(opts)
   local session = nil
   local args = {}
@@ -60,8 +62,26 @@ end, { nargs = '?', desc = 'Close the active Kakoune UI session.' })
 vim.api.nvim_create_user_command('KakNewWin', function(opts)
   local placement = opts.fargs[1]
   local session = opts.fargs[2]
-  vim.cmd(require('kak.ui.windowing').split_for(placement))
-  require('kak.ui').open({ session = session })
+  -- Capture every error here so it lands in the kak-ui log file.
+  -- When `:new` is invoked from inside kak, the nvim-side trigger is
+  -- a `nvim --remote-expr "execute('KakNewWin window <sess>')"`;
+  -- an unhandled error from `open()` becomes `--remote-expr`'s
+  -- exit code 2 with no error message reaching the user. Catching
+  -- + logging + re-raising gives us the error string in the log
+  -- AND keeps the non-zero exit code (so --remote-expr still
+  -- reports failure).
+  local ok, err = pcall(function()
+    vim.cmd(require('kak.ui.windowing').split_for(placement))
+    require('kak.ui').open({ session = session })
+  end)
+  if not ok then
+    log.error('KakNewWin failed', {
+      placement = placement,
+      session = session,
+      err = tostring(err),
+    })
+    error(err)
+  end
 end, {
   nargs = '+',
   desc = 'Open a new split hosting a Kakoune json-ui client for <session>.',

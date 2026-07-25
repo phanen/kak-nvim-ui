@@ -18,13 +18,21 @@
 ---     `vim.system` does not, so we set it explicitly).
 ---   * `kak_script_path()` -- absolute path to `kak/nvim.kak` so the
 ---     child can source it on startup.
+---   * `daemon_preamble()` -- the `-E` payload the daemon sources
+---     ONCE at startup (`source <kak_script>; require-module nvim;
+---     set global windowing_module nvim`). This MUST be applied
+---     server-side, not per-client: kak options + commands are
+---     session-wide, and requiring the module twice raises
+---     `provide-module: module 'nvim' already defined`.
+---   * `daemon_argv(session)` -- argv we pass to `kak -d -s
+---     <session> -E <preamble>`. Exposed for tests; production
+---     callers go through `kak.ui._ensure_daemon`.
 ---   * `inject_args(opts)` -- mutates an `opts` table for
 ---     `kak.ui.open` so EVERY open (`Kak`, `KakNewWin`, `KakNewTab`)
----     picks up the listen env and a leading
----     `-e 'source ...; require-module nvim; set global windowing_module nvim'`
----     argument. The `require-module nvim` is required: `provide-module`
----     only registers the module body for later execution, and without
----     the require the `nvim-terminal-*` commands are never defined.
+---     picks up the listen env. The client does NOT source the
+---     preamble -- it inherits everything from the daemon. Caller
+---     `extra_args` (including any `-e <payload>` the test/spec
+---     passed) are preserved verbatim.
 ---   * `focus_active()` -- focus the content window of the live
 ---     session, used by the `nvim-focus` kak command.
 ---
@@ -77,26 +85,41 @@ function M.kak_script_path()
   return base .. '/kak/nvim.kak'
 end
 
+--- Build the kakoune startup preamble: source the nvim windowing
+--- module so `:new`, `:tabnew`, `focus` inside this session shell
+--- back into the parent nvim. Applied ONCE by the daemon (`-E`)
+--- so all clients sharing the session inherit it for free; the
+--- `require-module nvim` is mandatory because `provide-module`
+--- only registers the module body for later execution, and
+--- without the require the `define-command` calls inside
+--- `kak/nvim.kak` never run.
+---@return string
+function M.daemon_preamble()
+  return 'source '
+    .. M.kak_script_path()
+    .. '; require-module nvim; set global windowing_module nvim'
+end
+
+--- Argv we pass to `kak -d -s <session> -E <preamble>`. Exposed
+--- so tests can assert the structure without spawning a process.
+---@param session string
+---@return string[]
+function M.daemon_argv(session) return { 'kak', '-d', '-s', session, '-E', M.daemon_preamble() } end
+
 --- Inject nvim-windowing scaffolding into an `opts` table for
 --- `kak.ui.open`.
 ---
---- Adds `opts.env.NVIM` (so the child kak can shell back into us)
---- and folds `source <kak_script>; require-module nvim; set global
---- windowing_module nvim` into the FIRST `-e` payload so the child
---- registers AND executes the `nvim-*` windowing commands and
---- overrides the default module.
+--- Adds `opts.env.NVIM` (so the child kak can shell back into us
+--- via `%sh{ nvim --server $NVIM ... }`). Does NOT source the
+--- windowing preamble -- the daemon does that with `-E` and the
+--- client inherits everything session-wide. Caller `extra_args`
+--- (including any `-e <payload>` they passed) are passed through
+--- verbatim: no folding, no synthetic `-e`.
 ---
---- `require-module nvim` is required because `provide-module` only
---- registers the module body for later execution; without the
---- explicit require the `define-command` calls inside `kak/nvim.kak`
---- never run and `:new` reports `nvim-terminal-window: no such
---- command`.
----
---- Kakoune accepts exactly one `-e` flag, so we cannot append a
---- second one -- we must merge into whatever the caller passed (or
---- introduce our own `-e` if they didn't pass one). Caller-supplied
---- `extra_args` that don't touch `-e` (e.g. `-foo`, `--session=...`)
---- are preserved in place.
+--- The previous design folded our preamble into the client's `-e`
+--- payload. That triggered `provide-module: module 'nvim' already
+--- defined` every time a second client joined, because the daemon
+--- had already sourced + required the module server-side.
 ---@param opts? kak.ui.OpenOpts
 ---@return kak.ui.OpenOpts
 function M.inject_args(opts)
@@ -106,46 +129,6 @@ function M.inject_args(opts)
   local env = env_in and vim.deepcopy(env_in) or {}
   env.NVIM = M.listen_socket()
   opts.env = env
-  local preamble = 'source '
-    .. M.kak_script_path()
-    .. '; require-module nvim; set global windowing_module nvim; '
-  ---@type string[]
-  local user = opts.extra_args or {}
-  local merged = false
-  ---@type string[]
-  local out = {}
-  local i = 1
-  while i <= #user do
-    local a = user[i]
-    ---@cast a string
-    local is_combined = a:sub(1, 2) == '-e' and #a > 2
-    if not merged and a == '-e' and i < #user then
-      -- `-e <payload>` (separate-arg) form: fold the payload into
-      -- our preamble; consume both entries.
-      out[#out + 1] = '-e'
-      out[#out + 1] = preamble .. user[i + 1]
-      merged = true
-      i = i + 2
-    elseif not merged and is_combined then
-      -- `-e<payload>` (combined) form: split into `-e` flag +
-      -- folded payload.
-      out[#out + 1] = '-e'
-      out[#out + 1] = preamble .. a:sub(3)
-      merged = true
-      i = i + 1
-    else
-      out[#out + 1] = a
-      i = i + 1
-    end
-  end
-  if not merged then
-    -- Caller passed no `-e` at all: introduce one with just our
-    -- preamble (drop the trailing '; ') so the windowing module is
-    -- registered even when there is no caller payload to merge into.
-    out[#out + 1] = '-e'
-    out[#out + 1] = preamble:sub(1, -3)
-  end
-  opts.extra_args = out
   return opts
 end
 
