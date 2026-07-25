@@ -38,7 +38,7 @@ local ACTIVE = nil
 ---@return kak.ui.Session
 function M.open(opts)
   if ACTIVE then return ACTIVE end
-  opts = opts or {}
+  opts = require('kak.ui.windowing').inject_args(opts)
   local cmd = opts.cmd or { 'kak' }
   local session = opts.session
 
