@@ -2,12 +2,15 @@
 --- Tab/window lifecycle for the Kakoune JSON-UI render area.
 ---
 --- A `Surface` owns the content buffer (the Kakoune edit area) and the
---- window that displays it. It also handles the resize-reporting hook
---- so the render area stays in sync with `kak -ui json`. The statusline
---- + cmdline lives on nvim's native `&statusline` (see
---- `lua/kak/ui/statusbar.lua`); `Surface:open` reserves that bottom row
---- by flipping `laststatus=2` + `showtabline=0` + `cmdheight=0` and
---- saves the previous values so `Surface:close` can restore them.
+--- window that displays it. It also creates the status float -- a
+--- 1-row floating window at the bottom of the editor that renders the
+--- Kakoune statusline + cmdline (see `lua/kak/ui/statusbar.lua`).
+---
+--- To stop nvim from drawing its OWN statusline on top of ours we set
+--- `laststatus=0` (was 2 with the `&statusline`-string approach).
+--- `editor_dims()` reports `lines-1` rows to Kakoune so the editor
+--- draws `lines-1` rows of content while the float overlays the last
+--- screen row.
 ---
 --- Kakoune is a single-window editor, so this plugin claims exactly one
 --- tab + one window per session and never creates splits: a normal-mode
@@ -25,6 +28,8 @@
 ---@field rpc? kak.ui.json_rpc.Connection
 ---@field content_buf integer?
 ---@field content_win integer?
+---@field status_buf integer?
+---@field status_win integer?
 ---@field saved? { showtabline: integer, laststatus: integer, cmdheight: integer }
 ---@field open fun(self: kak.ui.surface.Surface, opts?: kak.ui.surface.SurfaceOpenOpts)
 ---@field close fun(self: kak.ui.surface.Surface)
@@ -33,6 +38,7 @@
 ---@field editor_dims fun(self: kak.ui.surface.Surface): { width: integer, height: integer }
 ---@field editor_row fun(self: kak.ui.surface.Surface, buf: integer, line: integer): integer?
 ---@field editor_col fun(self: kak.ui.surface.Surface, buf: integer, column: integer): integer?
+---@field ensure_status_float fun(self: kak.ui.surface.Surface)
 
 local M = {}
 
@@ -52,6 +58,8 @@ function M.new(opts)
     rpc = nil,
     content_buf = nil,
     content_win = nil,
+    status_buf = nil,
+    status_win = nil,
   }, Surface)
 end
 
@@ -101,17 +109,66 @@ function Surface:open(opts)
   -- straight setter and does not fail in normal flow.
   vim.api.nvim_buf_set_name(self.content_buf, bufname(self.session))
 
-  -- Reserve the bottom row for the Kakoune statusline and remove the
-  -- stray nvim tabline / cmdline so the statusline IS the last row
-  -- and nvim's own cmdline cannot activate (`:`, `/`).
+  -- laststatus=0: we render our OWN statusline in a float, so nvim
+  -- must not draw its own statusline on top of it. cmdheight=0 keeps
+  -- the nvim cmdline out of the way; showtabline=0 hides the tabline.
   self.saved = {
     showtabline = vim.o.showtabline,
     laststatus = vim.o.laststatus,
     cmdheight = vim.o.cmdheight,
   }
   vim.o.showtabline = 0
-  vim.o.laststatus = 2
+  vim.o.laststatus = 0
   vim.o.cmdheight = 0
+
+  self:ensure_status_float()
+end
+
+--- Open the status float (1 row at the bottom of the editor). Safe to
+--- call repeatedly: bails out if the window + buffer are still valid.
+function Surface:ensure_status_float()
+  if
+    self.status_win
+    and vim.api.nvim_win_is_valid(self.status_win)
+    and self.status_buf
+    and vim.api.nvim_buf_is_valid(self.status_buf)
+  then
+    return
+  end
+
+  self.status_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[self.status_buf].bufhidden = 'wipe'
+  vim.bo[self.status_buf].swapfile = false
+  vim.bo[self.status_buf].buftype = 'nofile'
+  vim.bo[self.status_buf].filetype = 'kak-ui-status'
+  vim.bo[self.status_buf].modifiable = true
+
+  local cols = vim.o.columns or 120
+  local lines = vim.o.lines or 40
+
+  -- Determine the float's row from the content window when available
+  -- (its height equals the editor area when laststatus=0/cmdheight=0);
+  -- fall back to the screen height otherwise.
+  local row
+  if self.content_win and vim.api.nvim_win_is_valid(self.content_win) then
+    row = vim.api.nvim_win_get_height(self.content_win) - 1
+    cols = vim.api.nvim_win_get_width(self.content_win)
+  else
+    row = lines - 1
+  end
+  if row < 0 then row = 0 end
+
+  self.status_win = vim.api.nvim_open_win(self.status_buf, false, {
+    relative = 'editor',
+    row = row,
+    col = 0,
+    width = cols,
+    height = 1,
+    border = 'none',
+    focusable = false,
+    style = 'minimal',
+    noautocmd = true,
+  })
 end
 
 function Surface:close()
@@ -123,6 +180,13 @@ function Surface:close()
     vim.o.cmdheight = self.saved.cmdheight
     self.saved = nil
   end
+  -- Tear down the status float first; the buffer's bufhidden=wipe
+  -- handles cleanup once its only window closes.
+  if self.status_win and vim.api.nvim_win_is_valid(self.status_win) then
+    pcall(vim.api.nvim_win_close, self.status_win, true)
+  end
+  self.status_win = nil
+  self.status_buf = nil
   -- Detach: drop our references to the buffers/window. The window itself
   -- stays open so external code (e.g. screen tests) can keep observing
   -- the rendered buffer; bufhidden=wipe handles cleanup when nvim
@@ -133,13 +197,28 @@ function Surface:close()
   self.rpc = nil
 end
 
+--- Notify Kakoune of the current editor area and reposition the
+--- status float to track the new dimensions.
 function Surface:report_resize()
   local win = self.content_win
   if not win or not vim.api.nvim_win_is_valid(win) then return end
   if not self.rpc or self.rpc:is_closing() then return end
-  local rows = vim.api.nvim_win_get_height(win)
   local cols = vim.api.nvim_win_get_width(win)
+  -- The status float overlays the last content row; the editor area
+  -- reported to kak is therefore content_win height minus 1.
+  local rows = vim.api.nvim_win_get_height(win) - 1
+  if rows < 1 then rows = 1 end
   self.rpc:notify('resize', { rows, cols })
+  self:ensure_status_float()
+  if self.status_win and vim.api.nvim_win_is_valid(self.status_win) then
+    pcall(vim.api.nvim_win_set_config, self.status_win, {
+      relative = 'editor',
+      row = rows,
+      col = 0,
+      width = cols,
+      height = 1,
+    })
+  end
 end
 
 function Surface:focus()
@@ -152,11 +231,11 @@ end
 function Surface:editor_dims()
   local win = self.content_win
   if not win or not vim.api.nvim_win_is_valid(win) then
-    return { width = vim.o.columns or 120, height = vim.o.lines or 40 }
+    return { width = vim.o.columns or 120, height = (vim.o.lines or 40) - 1 }
   end
   return {
     width = vim.api.nvim_win_get_width(win),
-    height = vim.api.nvim_win_get_height(win),
+    height = math.max(1, vim.api.nvim_win_get_height(win) - 1),
   }
 end
 

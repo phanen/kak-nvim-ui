@@ -160,6 +160,7 @@ end
 ---@field rpc kak.ui.input.Connection
 ---@field buf integer?
 ---@field enabled boolean
+---@field surface? kak.ui.surface.Surface
 ---@field on_key_ns integer?
 ---@field on_key_fn fun(_, typed: string): string?
 ---@field paste_orig (fun(lines: string[], phase: (-1|1|2|3)): boolean)?
@@ -167,11 +168,12 @@ end
 local Handler = {}
 Handler.__index = Handler
 
----@param opts { rpc: kak.ui.input.Connection }
+---@param opts { rpc: kak.ui.input.Connection, surface?: kak.ui.surface.Surface }
 ---@return kak.ui.input.Handler
 function M.new(opts)
   return setmetatable({
     rpc = opts.rpc,
+    surface = opts.surface,
     buf = nil,
     enabled = false,
     on_key_ns = nil,
@@ -310,8 +312,13 @@ end
 ---@return integer?, integer?
 function Handler.mouse_to_kak_coord() return mouse_payload() end
 
---- Report current nvim window dimensions to kakoune.
+--- Report current nvim window dimensions to kakoune. The Surface
+--- owns the resize logic (notify + reposition the status float).
 function Handler:report_resize()
+  if self.surface then
+    self.surface:report_resize()
+    return
+  end
   if not self.buf then return end
   local win = vim.fn.bufwinid(self.buf)
   if not win or win == 0 then return end

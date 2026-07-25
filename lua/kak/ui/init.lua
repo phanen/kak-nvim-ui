@@ -105,7 +105,7 @@ function M.open(opts)
   surface.rpc = conn
 
   local buf = handlers:ensure_buf()
-  local input_handler = input.new({ rpc = conn })
+  local input_handler = input.new({ rpc = conn, surface = surface })
   input_handler:enable(buf)
 
   vim.defer_fn(function()

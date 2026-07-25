@@ -156,158 +156,174 @@ describe('cursor placement', function()
   end)
 end)
 
-describe('statusbar.compose', function()
+describe('statusbar.build_line', function()
   before_each(function() h.setup() end)
 
-  -- All cases are pure compose calls (no window interaction); the
-  -- returned string is checked against Lua patterns since the cache
-  -- generates per-process hl group names like KakFace_<hash>.
+  -- Pure compose-style tests for the float-buffer builder. The float
+  -- rendering itself is covered end-to-end by kak_session_spec screen
+  -- tests; these cases verify the math that drives the cursor extmark
+  -- and the right-justified mode_line.
 
-  it('inserts the cursor cell at cursor_pos and joins mode_line via %=', function()
+  it('places prompt on left, pads, and right-justifies mode_line', function()
     local r = h.exec_lua(function()
       local s = require('kak.ui.statusbar')
       local faces = require('kak.ui.faces').new()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      return s.compose(
+      local built = s.build_line(
         { { face = df, contents = ':' } },
         { { { face = df, contents = 'hello' } } },
-        4,
         { { face = df, contents = 'NORMAL' } },
         df,
-        'command',
+        40,
         faces
       )
+      local n_at = built.text:find('NORMAL', 1, true)
+      return {
+        prompt_len = built.prompt_len,
+        left = built.text:sub(1, 6),
+        n_at = n_at,
+        width = vim.fn.strdisplaywidth(built.text),
+        left_width = n_at and vim.fn.strdisplaywidth(built.text:sub(1, n_at - 1)) or nil,
+      }
     end)
-    -- %= separates left/right; left content is "hell" + reverse cell on "o".
-    assert(r:find('%=', 1, true), 'expected %= separator, got: ' .. r)
-    assert(r:find('NORMAL', 1, true), 'expected mode_line text on right side, got: ' .. r)
-    assert(r:sub(1, 2) == '%#', 'string must start with a hl group marker')
-    -- Cursor cell wraps the char at column 4 (zero-based): 'hell' | 'o' | ''
-    -- Pattern: literal 'hell', then literal '%*%#' (end base + start hl),
-    -- then any chars except '#', then '#', then literal 'o', then literal '%*'.
-    -- '%%%*' (pattern) = literal '%*' (2 chars).
-    assert(r:find('hell%%%*%%%#[^#]+#o%%%*'), 'expected cursor cell wrapping o, got: ' .. r)
+    h.eq(1, r.prompt_len)
+    h.eq(':hello', r.left)
+    h.eq(40, r.width)
+    h.eq(40 - 6, r.left_width)
   end)
 
-  it('emits no cursor cell when cursor_pos < 0 (style=status)', function()
+  it(
+    'strips trailing \\n / \\r from atom contents so the float text has no line terminators',
+    function()
+      local r = h.exec_lua(function()
+        local s = require('kak.ui.statusbar')
+        local faces = require('kak.ui.faces').new()
+        local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+        return s.build_line(
+          { { face = df, contents = ':\n' } },
+          { { { face = df, contents = 'edit foo\n' } } },
+          { { face = df, contents = 'NORMAL\n' } },
+          df,
+          40,
+          faces
+        )
+      end)
+      -- No line terminators in the buffer text (Kakoune terminates atoms
+      -- with \n; we strip them so the float renders on a single row).
+      assert(not r.text:match('[\r\n]'), 'expected no \\r or \\n in built text, got: ' .. r.text)
+      assert(
+        r.text:find(':edit foo', 1, true) ~= nil,
+        'expected ":edit foo" visible, got: ' .. r.text
+      )
+      assert(r.text:find('NORMAL', 1, true) ~= nil, 'expected mode_line visible, got: ' .. r.text)
+    end
+  )
+
+  it('tracks one span per atom byte range (prompt + content + mode)', function()
     local r = h.exec_lua(function()
       local s = require('kak.ui.statusbar')
       local faces = require('kak.ui.faces').new()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      return s.compose(
+      return s.build_line(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'hello' } } },
-        -1,
-        { { face = df, contents = 'NORMAL' } },
+        { { { face = df, contents = 'ab' }, { face = df, contents = 'cd' } } },
+        { { face = df, contents = 'XY' } },
         df,
-        'status',
+        20,
         faces
       )
     end)
-    assert(r:find('hello', 1, true), 'expected hello text in compose, got: ' .. r)
-    assert(r:find('%=', 1, true), 'expected %= separator, got: ' .. r)
-    -- No cursor group (`KakFace_` with `reverse`) should appear; the
-    -- cursor face is computed but unused when cursor_pos < 0, so the
-    -- only KakFace_* groups that appear are those for atoms with non-
-    -- default face attributes (none here).
-    for hl in r:gmatch('%%#([^#]+)#') do
-      assert(not hl:match('reverse'), 'no reverse cursor group expected, got: ' .. hl)
+    -- text = ':abcd' + padding + 'XY'; spans (b0,b1,hl):
+    -- prompt ':'   -> 0..1
+    -- content 'ab'  -> 1..3
+    -- content 'cd'  -> 3..5
+    -- pad spaces    -> 5..(5 + pad)  (uses default face hl)
+    -- mode 'XY'     -> 5+pad..7+pad
+    local pad_end = 5 + (#r.text - 7)
+    assert(r.spans[1][1] == 0 and r.spans[1][2] == 1, 'prompt span mismatch')
+    assert(r.spans[2][1] == 1 and r.spans[2][2] == 3, 'ab span mismatch')
+    assert(r.spans[3][1] == 3 and r.spans[3][2] == 5, 'cd span mismatch')
+    assert(r.spans[4][1] == 5 and r.spans[4][2] == pad_end, 'pad span mismatch')
+    assert(r.spans[5][1] == pad_end and r.spans[5][2] == pad_end + 2, 'mode span mismatch')
+    -- Every hl_group is a non-empty string (cache:get returns at least
+    -- KakDefault for nil faces).
+    for _, s in ipairs(r.spans) do
+      assert(type(s[3]) == 'string' and #s[3] > 0, 'span missing hl_group')
     end
   end)
 
-  it('escapes % in atom contents so nvim does not interpret it', function()
+  it('drops mode_line when it does not fit', function()
     local r = h.exec_lua(function()
       local s = require('kak.ui.statusbar')
       local faces = require('kak.ui.faces').new()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      return s.compose({ { face = df, contents = '50% off' } }, nil, -1, nil, df, 'status', faces)
-    end)
-    -- esc turns '50% off' -> '50%% off'; the literal '%%' appears once.
-    assert(r:find('50%%', 1, true), 'expected 50%% (escaped), got: ' .. r)
-    -- A nvim statusline item that starts with '%o' (filenamenr) must
-    -- not appear: every literal '%' in the atom contents was doubled,
-    -- so '%o' should never be present in the composed string.
-    assert(not r:find('%%o'), 'unexpected unescaped %o statusline item: ' .. r)
-    assert(r:find('off'), 'expected "off" in composed string: ' .. r)
-  end)
-
-  it('places cursor cell after content when cursor_pos >= content length', function()
-    local r = h.exec_lua(function()
-      local s = require('kak.ui.statusbar')
-      local faces = require('kak.ui.faces').new()
-      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      return s.compose(
-        { { face = df, contents = ':' } },
-        { { { face = df, contents = 'hi' } } },
-        99,
-        { { face = df, contents = 'NORMAL' } },
+      return s.build_line(
+        { { face = df, contents = 'this-prompt' } },
+        { { { face = df, contents = string.rep('x', 50) } } },
+        { { face = df, contents = 'LONG_MODE_LINE' } },
         df,
-        'command',
+        10,
         faces
       )
     end)
-    -- The "after" cursor cell is a reverse space at the end of content.
-    -- Use a pattern so the hl group name wildcard works. '%%%*' = literal
-    -- '%*' (2 chars); ' ' is literal space; '# ' is literal `# ` and so on.
-    assert(r:find('hi%%%*%%%#[^#]+# %%%%*'), 'expected cursor space after hi, got: ' .. r)
-    assert(r:find('NORMAL', 1, true), 'mode_line still on right: ' .. r)
-  end)
-
-  it('collapses to empty LEFT when no prompt/content/mode_line', function()
-    local r = h.exec_lua(function()
-      local s = require('kak.ui.statusbar')
-      local faces = require('kak.ui.faces').new()
-      return s.compose(nil, nil, -1, nil, nil, 'status', faces)
-    end)
-    h.eq('', r)
-  end)
-
-  it('strips trailing \\n / \\r from atom contents so &statusline has no newlines', function()
-    local r = h.exec_lua(function()
-      local s = require('kak.ui.statusbar')
-      local faces = require('kak.ui.faces').new()
-      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      return s.compose(
-        { { face = df, contents = ':\n' } },
-        { { { face = df, contents = 'edit foo\n' } } },
-        4,
-        { { face = df, contents = 'NORMAL\n' } },
-        df,
-        'command',
-        faces
-      )
-    end)
-    -- The composed &statusline string must contain NO line terminators
-    -- (Kakoune appends `\n` to atoms; stripping them keeps the cmdline
-    -- visible instead of letting nvim garble the statusline).
-    assert(not r:match('[\r\n]'), 'expected no \\r or \\n in composed statusline, got: ' .. r)
-    -- The visible text content (prompt + typed + mode_line) is preserved.
-    -- The cursor cell at column 4 wraps the space; each atom lives in
-    -- its own hl-group chunk, so the boundaries are `%*%#KakFace_...#`.
-    -- Allow those between visible fragments.
-    local function contains_pieces(s, pieces)
-      local pos = 1
-      for _, p in ipairs(pieces) do
-        local s_esc = (p:gsub('%%', '%%%%')):gsub('([%(%)%.%%%+%-%*%?%[%]%^%$])', '%%%1')
-        -- match the visible fragment OR `%*%#KakFace_...#` (hl-group
-        -- boundary) as a separator; advance past whichever we find.
-        local pat = '()' .. s_esc
-        local pat_at = s:find(pat, pos)
-        local bnd_at = s:find('%%%*%%%#KakFace_%w+#', pos)
-        if pat_at and (not bnd_at or pat_at < bnd_at) then
-          pos = pat_at + #p
-        elseif bnd_at then
-          local _, e = s:find('%%%*%%%#KakFace_%w+#', pos)
-          pos = e + 1
-        else
-          return false
-        end
-      end
-      return true
-    end
     assert(
-      contains_pieces(r, { ':', 'edit', ' ', 'foo', 'NORMAL' }),
-      'expected ":edit foo" cmdline + NORMAL mode visible, got: ' .. r
+      not r.text:find('LONG_MODE_LINE', 1, true),
+      'expected mode_line dropped when it does not fit, got: ' .. r.text
     )
   end)
+
+  it('no padding when mode_line is absent', function()
+    local r = h.exec_lua(function()
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      return s.build_line(
+        { { face = df, contents = ':' } },
+        { { { face = df, contents = 'hello' } } },
+        nil,
+        df,
+        40,
+        faces
+      )
+    end)
+    h.eq(':hello', r.text)
+    h.eq(1, r.prompt_len)
+  end)
+
+  it(
+    'cursor byte math: prompt_len + column_to_byte(content) places the cursor correctly',
+    function()
+      -- M.render's cursor math uses prompt_len + render.column_to_byte
+      -- against content_str. Validate that the build_line output makes
+      -- those values self-consistent for ASCII and UTF-8 supplementary.
+      local r = h.exec_lua(function()
+        local s = require('kak.ui.statusbar')
+        local render = require('kak.ui.render')
+        local faces = require('kak.ui.faces').new()
+        local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+        local built = s.build_line(
+          { { face = df, contents = ':' } },
+          { { { face = df, contents = 'héllo' } } },
+          nil,
+          df,
+          40,
+          faces
+        )
+        local b2 = render.column_to_byte(built.content_str, 2)
+        return {
+          cbyte_at_2 = built.prompt_len + b2,
+          clen_at_2 = render.codepoint_width(built.content_str, b2),
+          cbyte_past = built.prompt_len + render.column_to_byte(built.content_str, 99),
+          text_len = #built.text,
+        }
+      end)
+      -- 'héllo' is 7 bytes; column 2 (zero-based) is the 'l'.
+      -- h(1) é(2..3) l(4) -> column_to_byte(content, 2) = byte 3.
+      h.eq(1 + 3, r.cbyte_at_2)
+      h.eq(1, r.clen_at_2)
+      -- column 99 is past end; column_to_byte clamps to #content_str=6,
+      -- so cursor sits at byte 1+6 = 7.
+      h.eq(1 + 6, r.cbyte_past)
+    end
+  )
 end)

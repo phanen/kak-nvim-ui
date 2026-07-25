@@ -69,9 +69,8 @@ function Handlers:draw_status(raw)
   -- log lines (the error fires through init.lua's on_notify pcall).
   local style = P.check_enum('draw_status', raw[6] or 'status', valid, 6)
   ---@cast style kak.ui.protocol.DrawStyle
-  local win = self.surface and self.surface.content_win or nil
   require('kak.ui.statusbar').render(
-    win,
+    self.surface,
     prompt,
     content,
     cursor,

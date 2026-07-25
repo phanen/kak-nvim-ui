@@ -58,14 +58,15 @@ describe('kak renders buffer + grid', function()
       end)
     end)
 
-    -- New layout: no tabline; 3 content rows + 20 tildes + statusline.
-    -- Cursor col 0 puts `^` before the first content line.
+    -- Layout: 3 content rows + 20 tildes + status float at the last
+    -- row. The float renders the kak mode_line (filename, line:col,
+    -- sel count, client id). Cursor col 0 puts `^` before "alpha".
     screen:expect([[
       {MATCH:alpha line}
       {MATCH:beta line}
       {MATCH:gamma line}
       {MATCH:.*~.*}|*20
-      {MATCH:.*}
+      {MATCH:.*1:1.*}
     ]])
   end)
 
@@ -79,15 +80,12 @@ describe('kak renders buffer + grid', function()
     end)
     screen:snapshot_util()
 
-    -- New layout: no tabline; content starts at row 0; statusline
-    -- (mode_line text from draw_status) at the last row. Buffer area
-    -- is lines-1 = 23 rows: 1 content row + 22 tildes, then the
-    -- statusline at the final row. The `^` prefix on the content row
-    -- is the nvim cursor marker (cursor col 0 on "only line").
+    -- Layout: 1 content row + 22 tildes + status float. Cursor col 0
+    -- marks the content row with `^`.
     screen:expect([[
       {MATCH:only line}
       {MATCH:.*~.*}|*22
-      {MATCH:.*}
+      {MATCH:.*1:1.*}
     ]])
   end)
 
@@ -100,12 +98,12 @@ describe('kak renders buffer + grid', function()
       end)
     end)
 
-    -- New layout: no tabline; cursor row (^ on empty first row) + 22 tildes
-    -- + statusline at last row.
+    -- Empty file: cursor row 0 is empty (^), all other content rows
+    -- are tildes, status float at the last row carries line:col.
     screen:expect([[
       {MATCH:^}
       {MATCH:.*~.*}|*22
-      {MATCH:.*}
+      {MATCH:.*1:1.*}
     ]])
   end)
 
@@ -123,14 +121,12 @@ describe('kak renders buffer + grid', function()
       end)
     end)
 
-    -- New layout: 2 content rows + 21 tildes + statusline. The `-`
-    -- in `second-A` is a literal Lua pattern dash inside a character
-    -- class, not a range.
+    -- 2 content rows + 21 tildes + status float.
     screen:expect([[
       {MATCH:second%-A}
       {MATCH:second%-B}
       {MATCH:.*~.*}|*21
-      {MATCH:.*}
+      {MATCH:.*1:1.*}
     ]])
   end)
 
@@ -147,14 +143,14 @@ describe('kak renders buffer + grid', function()
       end)
     end)
 
-    -- The cursor glyph `^` is auto-prepended to the focused row;
-    -- use {MATCH:two} not {MATCH:^two}.
+    -- Cursor glyph `^` is auto-prepended to the focused row;
+    -- use {MATCH:two} not {MATCH:^two}. Status float at the last row.
     screen:expect([[
       {MATCH:one}
       {MATCH:two}
       {MATCH:three}
       {MATCH:.*~.*}|*20
-      {MATCH:.*}
+      {MATCH:.*1:1.*}
     ]])
   end)
 end)
