@@ -331,6 +331,16 @@ function Handler:enable()
   -- dedicated `mouse_*` / `scroll` notifications, not `keys`.
   local function send_mouse_event(lhs)
     return function()
+      -- nvim's default <LeftMouse> moves focus to the clicked window,
+      -- but our buffer-local nowait keymap intercepts the click. Switch
+      -- focus explicitly so clicking a sibling kak split routes input
+      -- there (WinEnter -> set_current) before forwarding to kak.
+      local pos = vim.fn.getmousepos()
+      if pos and pos.winid and vim.api.nvim_win_is_valid(pos.winid) then
+        if vim.api.nvim_get_current_win() ~= pos.winid then
+          pcall(vim.api.nvim_set_current_win, pos.winid)
+        end
+      end
       local cur = vim.api.nvim_get_current_buf()
       local sess = session_for_current_buf(cur)
       if not sess then return end
