@@ -212,12 +212,18 @@ function M.render(
     )
   end
 
-  -- Reposition every render (cheap; covers resize).
+  -- Reposition every render (cheap; covers resize). MUST be window-
+  -- relative + anchored to THIS surface's content_win: editor-relative
+  -- positioning collapses every session's float onto the screen bottom
+  -- (col=0, row=screen-height), so a sibling split's status/cmdline
+  -- renders in the WRONG window. `dims` is already window-scoped
+  -- (editor_dims returns nvim_win_get_{width,height} of content_win).
   pcall(vim.api.nvim_win_set_config, win, {
-    relative = 'editor',
+    relative = 'win',
+    win = surface.content_win,
     row = dims.height,
     col = 0,
-    width = cols,
+    width = dims.width,
     height = 1,
   })
   pcall(vim.api.nvim__redraw, { win = win, flush = true })
