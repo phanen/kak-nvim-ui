@@ -5,6 +5,8 @@
 ---   * per-atom highlight extmarks on inner content
 ---   * for prompt/modal info: borderless + Kakoune box frame drawn by
 ---     `popups.frame.box_extmarks`
+---   * all floats are borderless to match Kakoune's terminal-UI
+---     (menu/non-framed-info have no box; only prompt/modal draw one)
 ---   * winhighlight (Normal:bg)
 ---
 --- No positioning decisions live here -- those are in `popups.layout`.
@@ -42,6 +44,9 @@ end
 
 --- Open a menu float.
 ---
+--- Borderless to match Kakoune's terminal-UI menus (the bg face fills
+--- the whole region; selected items use fg, others bg -- no box frame).
+---
 ---@param items kak.ui.protocol.Lines
 ---@param bg kak.ui.faces.Face?
 ---@param geom kak.ui.popups.layout.Geom geometry from `layout.menu_pos`
@@ -63,11 +68,11 @@ function M.open_menu(items, bg, geom, cache)
     relative = 'editor',
     anchor = anchor,
     style = 'minimal',
-    width = math.max(geom.width + 2, 4),
-    height = geom.height,
+    width = math.max(geom.width, 1),
+    height = math.max(geom.height, 1),
     row = geom.row,
     col = geom.col,
-    border = 'single',
+    border = 'none',
     focusable = false,
     noautocmd = true,
   }
@@ -77,10 +82,10 @@ function M.open_menu(items, bg, geom, cache)
   return buf, win
 end
 
---- Open an info float. For `prompt` and `modal` the float is
---- borderless and the box frame is drawn by
---- `popups.frame.box_extmarks`. Other styles (menuDoc, generic)
---- keep `border='single'`.
+--- Open an info float. All styles are borderless to match Kakoune's
+--- terminal-UI: `prompt`/`modal` draw their own box frame via
+--- `popups.frame.box_extmarks`; other styles (menuDoc, generic) have
+--- no box at all.
 ---
 ---@param ns integer
 ---@param title kak.ui.protocol.Line
@@ -108,7 +113,7 @@ function M.open_info(ns, title, content, face, style, geom, focusable, cache)
     height = geom.height,
     row = geom.row,
     col = geom.col,
-    border = framed and 'none' or 'single',
+    border = 'none',
     focusable = focusable,
     noautocmd = true,
   }

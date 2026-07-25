@@ -197,4 +197,33 @@ describe('popup window positioning', function()
       'expected right edge aligned with editor (col=160), got col=' .. tostring(pos.col)
     )
   end)
+
+  it('menu float is opened borderless (matches kakoune terminal-UI)', function()
+    local result = with_big_screen([[
+      local renderer = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      renderer:set_buf(vim.api.nvim_create_buf(false, true))
+      renderer:set_mode_buf(vim.api.nvim_create_buf(false, true))
+      local popups = require('kak.ui.popups').new({ faces = renderer.faces, renderer = renderer })
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      popups:menu_show(
+        { { { face = df, contents = 'option-A' } }, { { face = df, contents = 'option-B' } } },
+        { line = 5, column = 0 },
+        df,
+        df,
+        'prompt'
+      )
+      local config = vim.api.nvim_win_get_config(popups.menu_state.win)
+      popups:menu_hide()
+      return {
+        border = config.border,
+        width = config.width,
+        height = config.height,
+      }
+    ]])
+    -- Kakoune draws no border on menus; the bg face fills the region.
+    assert(
+      result.border == 'none',
+      'expected menu border == "none", got ' .. tostring(result.border)
+    )
+  end)
 end)
