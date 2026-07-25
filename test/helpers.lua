@@ -1,6 +1,7 @@
 -- Test helpers. Re-exports nvim-test's and adds:
 --   write_executable / write_file / write_wire_logged - tmp scripts/files
---   with_kak_session / with_fake_kak - spawn and run a body in the child
+--   with_kak_session - spawn real kak -ui json and run a body in the child
+--   with_fake_kak_server - structured Lua spec for fake-kak-server fixture
 --   with_screen - attach a Screen for screen:expect / snapshot_util
 --   rmdir - safe recursive delete (replaces `rm -rf` shell patterns)
 
@@ -96,40 +97,6 @@ function M.with_kak_session(opts, body, ...)
   return result
 end
 
---- Spawn a fake-kak shell script and run `body(sess, captured, ...)` in
---- the child. `sess` is a raw `kak.ui.json_rpc.Connection`; `captured`
---- is appended `{method, params}` for each inbound NOTIFY. Drains 200 ms.
---- @param script string
---- @param body fun(sess: any, captured: table, ...): any
---- @return any
-function M.with_fake_kak(script, body, ...)
-  local fake_path = M.write_executable(script)
-  -- pcall so internal cleanup runs even if body throws inside the child.
-  -- busted's `finally()` resolves via the test's _ENV, so it cannot be
-  -- used from this module-level helper.
-  local ok, result = pcall(exec_lua, function(fake_path, body_src, ...)
-    local body = assert(loadstring(body_src))
-    local rpc = require('kak.ui.json_rpc')
-    local captured = {}
-    local sess = rpc.spawn({ fake_path }, {
-      dispatchers = {
-        on_notify = function(method, params) captured[#captured + 1] = { method, params } end,
-        on_request = function() end,
-        on_exit = function() end,
-        on_error = function() end,
-      },
-    })
-    local got = body(sess, captured, ...)
-    sess:terminate()
-    return got
-  end, fake_path, string.dump(body), ...)
-
-  M.sleep(200)
-  os.remove(fake_path)
-  if not ok then error(result) end
-  return result
-end
-
 --- Attach a `nvim-test.screen.Screen` to the current test session.
 --- Use in `before_each` so redraw events from `kak.ui` (driven via
 --- `exec_lua` in the test body) flow into the screen, then call
@@ -151,6 +118,108 @@ end
 --- @param path string
 function M.rmdir(path)
   vim.fs.rm(path, { recursive = true, force = true })
+end
+
+--- Absolute path of the fake-kak-server fixture.
+--- @return string
+function M.fake_kak_fixture_path()
+  return assert(
+    M.fn.fnamemodify('./test/fixtures/fake-kak-server.lua', ':p'),
+    'fake-kak-server fixture missing'
+  )
+end
+
+--- Path to the nvim binary the spawned fake server should reuse. In
+--- nvim-test, `NVIM_PRG` points at the target nvim (the same one that
+--- ends up running the body), so the fake server and the body share
+--- runtime/version. Falls back to `nvim` on PATH for non nvim-test use.
+--- @return string
+function M.fake_kak_nvim_path() return os.getenv('NVIM_PRG') or M.fn.exepath('nvim') or 'nvim' end
+
+--- Spawn the fake-kak-server fixture running `spec_lua_src` and run
+--- `body(sess, captured, ...)` in the child. The spec is a small Lua
+--- script that drives the wire through the global `fake` API:
+---
+---   fake.notify(method, params)
+---   fake.respond(id, err, result)
+---   fake.expect_notify(method, params)
+---   fake.expect_request(method, handler)
+---   fake.recv()
+---   fake.sleep(ms)
+---   fake.exit(code)
+---
+--- Replaces the old shell-script `with_fake_kak`: the spec drives the
+--- wire through structured tables instead of hand-written JSON strings.
+--- See `test/fixtures/fake-kak-server.lua`.
+---
+--- `opts.wire_log` mirrors `with_kak_session`; the fixture writes every
+--- inbound/outbound frame to it via the `FAKE_KAK_WIRE_LOG` env var.
+---
+--- @param spec_lua_src string
+--- @param opts? { wire_log?: string }
+--- @param body fun(sess: any, captured: table, ...): any
+--- @return any
+function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
+  if type(opts) == 'function' then
+    body, opts = opts, nil
+  end
+  opts = opts or {}
+  -- LuaJIT's `...` only resolves in the immediate vararg scope, so
+  -- capture forwarded args into a table before entering `pcall`.
+  local forward = { ... }
+  local n_forward = select('#', ...)
+
+  local spec_path = M.fn.tempname()
+  local spec_f = assert(io.open(spec_path, 'w'))
+  spec_f:write(spec_lua_src)
+  spec_f:close()
+
+  local fixture = M.fake_kak_fixture_path()
+  local nvim_path = M.fake_kak_nvim_path()
+  local prefix = ''
+  if opts.wire_log then prefix = 'FAKE_KAK_WIRE_LOG=' .. opts.wire_log .. ' ' end
+  local wrapper = M.write_executable(
+    '#!/bin/sh\n'
+      .. prefix
+      .. "exec '"
+      .. nvim_path
+      .. "' -l '"
+      .. fixture
+      .. "' '"
+      .. spec_path
+      .. "'\n"
+  )
+
+  local result
+  local ok, err = pcall(function()
+    result = exec_lua(function(fake_path, body_src, fwd, n_fwd)
+      local body = assert(loadstring(body_src))
+      local rpc = require('kak.ui.json_rpc')
+      local captured = {}
+      local sess = rpc.spawn({ fake_path }, {
+        dispatchers = {
+          on_notify = function(method, params) captured[#captured + 1] = { method, params } end,
+          on_request = function(method, _params)
+            -- Forwarded requests from the fake server: no handler in
+            -- current tests, but return an explicit error so the
+            -- server role in `Connection:_dispatch` is happy.
+            return nil, { code = -32601, message = 'not implemented: ' .. method }
+          end,
+          on_exit = function() end,
+          on_error = function(code, err) captured[#captured + 1] = { 'error', { code, err } } end,
+        },
+      })
+      local got = body(sess, captured, unpack(fwd, 1, n_fwd))
+      sess:terminate()
+      return got
+    end, wrapper, string.dump(body), forward, n_forward)
+  end)
+
+  M.sleep(200)
+  os.remove(wrapper)
+  os.remove(spec_path)
+  if not ok then error(err) end
+  return result
 end
 
 return M

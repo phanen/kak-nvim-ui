@@ -1,6 +1,6 @@
 -- End-to-end kak tests: real `kak -ui json`, fake-kak shell scripts,
 -- and input handler routing. Spawn-related boilerplate lives in
--- `test.helpers.{with_kak_session,with_fake_kak}`.
+-- `test.helpers.{with_kak_session,with_fake_kak_server}`.
 
 local h = require('test.helpers')
 local exec_lua = h.exec_lua
@@ -145,13 +145,13 @@ describe('input handler routing', function()
     -- the three mouse notifications. They must reach the rpc
     -- dispatcher verbatim and never leak into the `keys` path
     -- (input handler must not call conn:notify('keys', ...) for them).
-    local methods = h.with_fake_kak(
+    local methods = h.with_fake_kak_server(
       [[
-      printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{}]}\n'
-      printf '{"jsonrpc":"2.0","method":"mouse_press","params":["left",1,5]}\n'
-      printf '{"jsonrpc":"2.0","method":"mouse_release","params":["left",1,5]}\n'
-      printf '{"jsonrpc":"2.0","method":"scroll","params":[1,1,0]}\n'
-      sleep 5
+      fake.notify('set_ui_options', {{}})
+      fake.notify('mouse_press', { 'left', 1, 5 })
+      fake.notify('mouse_release', { 'left', 1, 5 })
+      fake.notify('scroll', { 1, 1, 0 })
+      fake.sleep(5000)
     ]],
       function(_, captured)
         vim.wait(3000, function() return #captured >= 4 end)
