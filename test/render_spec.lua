@@ -146,94 +146,109 @@ describe('cursor extmark visual width', function()
   end)
 end)
 
-describe('set_prompt is dead state storage (6761b80 behavior)', function()
+describe('statusbar.compose', function()
   before_each(function() h.setup() end)
 
-  -- Regression: Phase 4 commit 4a0cd6a added a render_prompt method
-  -- that wrote a virt_text overlay at the last visible row. That
-  -- overlay replaced the buffer text at that row (obscuring highlight)
-  -- and required cursor handling tricks that misplace the main
-  -- cursor. 6761b80's set_prompt only stored prompt state without
-  -- rendering anything -- cursor + highlight stayed correct.
-  it('does not write any prompt extmark to the buffer', function()
+  -- All cases are pure compose calls (no window interaction); the
+  -- returned string is checked against Lua patterns since the cache
+  -- generates per-process hl group names like KakFace_<hash>.
+
+  it('inserts the cursor cell at cursor_pos and joins mode_line via %=', function()
     local r = h.exec_lua(function()
-      local m = require('kak.ui.render')
-      local cache = require('kak.ui.faces').new()
-      local buf = vim.api.nvim_create_buf(false, true)
-      vim.bo[buf].modifiable = true
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'one', 'two' })
-      vim.bo[buf].modifiable = false
-      local render = m.new({ faces = cache })
-      render:set_buf(buf)
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
       local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
-      render:set_prompt(
+      return s.compose(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'edit' } } },
+        { { { face = df, contents = 'hello' } } },
         4,
+        { { face = df, contents = 'NORMAL' } },
         df,
-        'command'
+        'command',
+        faces
       )
-      local prompt_ns = vim.api.nvim_create_namespace('kak.ui.render.prompt')
-      return {
-        prompt_marks = vim.api.nvim_buf_get_extmarks(buf, prompt_ns, 0, -1, {}),
-        state_style = render.prompt_state.style,
-        state_cursor = render.prompt_state.cursor,
-      }
     end)
-    h.eq(0, #r.prompt_marks)
-    -- State is still recorded for inspection.
-    h.eq('command', r.state_style)
-    h.eq(4, r.state_cursor)
+    -- %= separates left/right; left content is "hell" + reverse cell on "o".
+    assert(r:find('%=', 1, true), 'expected %= separator, got: ' .. r)
+    assert(r:find('NORMAL', 1, true), 'expected mode_line text on right side, got: ' .. r)
+    assert(r:sub(1, 2) == '%#', 'string must start with a hl group marker')
+    -- Cursor cell wraps the char at column 4 (zero-based): 'hell' | 'o' | ''
+    -- Pattern: literal 'hell', then literal '%*%#' (end base + start hl),
+    -- then any chars except '#', then '#', then literal 'o', then literal '%*'.
+    -- '%%%*' (pattern) = literal '%*' (2 chars).
+    assert(r:find('hell%%%*%%%#[^#]+#o%%%*'), 'expected cursor cell wrapping o, got: ' .. r)
   end)
 
-  it('preserves the main cursor extmark when set_prompt fires in command mode', function()
-    -- The bug from 4a0cd6a: render_prompt cleared or moved the
-    -- cursor extmark. With the no-op set_prompt the cursor extmark
-    -- placed by draw remains in place, so the cursor stays where
-    -- Kakoune reported and the highlight under it survives.
+  it('emits no cursor cell when cursor_pos < 0 (style=status)', function()
     local r = h.exec_lua(function()
-      local m = require('kak.ui.render')
-      local cache = require('kak.ui.faces').new()
-      local buf = vim.api.nvim_create_buf(false, true)
-      vim.bo[buf].modifiable = true
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'one', 'two', 'three' })
-      vim.bo[buf].modifiable = false
-      local render = m.new({ faces = cache })
-      render:set_buf(buf)
-      local df = { fg = 'red', bg = 'default', underline = 'default', attributes = {} }
-
-      local cursor_ns = vim.api.nvim_create_namespace('kak.ui.render.cursor')
-      local content_ns = vim.api.nvim_create_namespace('kak.ui.render.content')
-
-      render:draw({
-        { { { face = df, contents = 'one' } } },
-        { { { face = df, contents = 'two' } } },
-        { { { face = df, contents = 'three' } } },
-      }, { line = 0, column = 0 }, df, nil)
-      local before = {
-        cursor_marks = vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {}),
-        content_marks = vim.api.nvim_buf_get_extmarks(buf, content_ns, 0, -1, {}),
-      }
-
-      render:set_prompt(
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      return s.compose(
         { { face = df, contents = ':' } },
-        { { { face = df, contents = 'edit' } } },
-        0,
+        { { { face = df, contents = 'hello' } } },
+        -1,
+        { { face = df, contents = 'NORMAL' } },
         df,
-        'command'
+        'status',
+        faces
       )
-
-      local after = {
-        cursor_marks = vim.api.nvim_buf_get_extmarks(buf, cursor_ns, 0, -1, {}),
-        content_marks = vim.api.nvim_buf_get_extmarks(buf, content_ns, 0, -1, {}),
-      }
-
-      return { before = before, after = after }
     end)
+    assert(r:find('hello', 1, true), 'expected hello text in compose, got: ' .. r)
+    assert(r:find('%=', 1, true), 'expected %= separator, got: ' .. r)
+    -- No cursor group (`KakFace_` with `reverse`) should appear; the
+    -- cursor face is computed but unused when cursor_pos < 0, so the
+    -- only KakFace_* groups that appear are those for atoms with non-
+    -- default face attributes (none here).
+    for hl in r:gmatch('%%#([^#]+)#') do
+      assert(not hl:match('reverse'), 'no reverse cursor group expected, got: ' .. hl)
+    end
+  end)
 
-    -- Cursor extmark count and content extmark count are unchanged
-    -- by set_prompt.
-    h.eq(#r.before.cursor_marks, #r.after.cursor_marks)
-    h.eq(#r.before.content_marks, #r.after.content_marks)
+  it('escapes % in atom contents so nvim does not interpret it', function()
+    local r = h.exec_lua(function()
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      return s.compose({ { face = df, contents = '50% off' } }, nil, -1, nil, df, 'status', faces)
+    end)
+    -- esc turns '50% off' -> '50%% off'; the literal '%%' appears once.
+    assert(r:find('50%%', 1, true), 'expected 50%% (escaped), got: ' .. r)
+    -- A nvim statusline item that starts with '%o' (filenamenr) must
+    -- not appear: every literal '%' in the atom contents was doubled,
+    -- so '%o' should never be present in the composed string.
+    assert(not r:find('%%o'), 'unexpected unescaped %o statusline item: ' .. r)
+    assert(r:find('off'), 'expected "off" in composed string: ' .. r)
+  end)
+
+  it('places cursor cell after content when cursor_pos >= content length', function()
+    local r = h.exec_lua(function()
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      local df = { fg = 'default', bg = 'default', underline = 'default', attributes = {} }
+      return s.compose(
+        { { face = df, contents = ':' } },
+        { { { face = df, contents = 'hi' } } },
+        99,
+        { { face = df, contents = 'NORMAL' } },
+        df,
+        'command',
+        faces
+      )
+    end)
+    -- The "after" cursor cell is a reverse space at the end of content.
+    -- Use a pattern so the hl group name wildcard works. '%%%*' = literal
+    -- '%*' (2 chars); ' ' is literal space; '# ' is literal `# ` and so on.
+    assert(r:find('hi%%%*%%%#[^#]+# %%%%*'), 'expected cursor space after hi, got: ' .. r)
+    assert(r:find('NORMAL', 1, true), 'mode_line still on right: ' .. r)
+  end)
+
+  it('collapses to empty LEFT when no prompt/content/mode_line', function()
+    local r = h.exec_lua(function()
+      local s = require('kak.ui.statusbar')
+      local faces = require('kak.ui.faces').new()
+      return s.compose(nil, nil, -1, nil, nil, 'status', faces)
+    end)
+    h.eq('', r)
   end)
 end)

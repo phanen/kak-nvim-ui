@@ -7,14 +7,30 @@ local h = require('test.helpers')
 
 local function with_handlers(body_src)
   return h.exec_lua(function(src)
+    -- Stub statusbar.render BEFORE requiring handlers so the require
+    -- inside Handlers:draw_status picks up our fake. (Both real and
+    -- stub keys live in package.loaded.)
+    local stub_calls = {}
+    package.loaded['kak.ui.statusbar'] = {
+      calls = stub_calls,
+      compose = function() return '' end,
+      render = function(win, prompt, content, cursor, mode_line, face, style)
+        stub_calls[#stub_calls + 1] = {
+          win = win,
+          prompt = prompt,
+          content = content,
+          cursor = cursor,
+          mode_line = mode_line,
+          face = face,
+          style = style,
+        }
+      end,
+    }
     local Handlers = require('kak.ui.handlers')
     local function rec(t, name, ...) t.calls[#t.calls + 1] = { name, ... } end
-    local renderer = { calls = {}, content_buf = nil, mode_buf = nil }
+    local renderer = { calls = {}, content_buf = nil }
     function renderer:draw(...) rec(self, 'draw', ...) end
-    function renderer:draw_mode(...) rec(self, 'draw_mode', ...) end
-    function renderer:set_prompt(...) rec(self, 'set_prompt', ...) end
     function renderer:set_buf(b) self.content_buf = b end
-    function renderer:set_mode_buf(b) self.mode_buf = b end
     local popups = { calls = {} }
     function popups:menu_show(...) rec(self, 'menu_show', ...) end
     function popups:menu_select(...) rec(self, 'menu_select', ...) end
@@ -31,7 +47,11 @@ local function with_handlers(body_src)
     local body = assert(loadstring(src))
     body()
     _G.Handlers = nil
-    return { renderer = renderer.calls, popups = popups.calls }
+    return {
+      renderer = renderer.calls,
+      popups = popups.calls,
+      statusbar = stub_calls,
+    }
   end, body_src)
 end
 
@@ -125,13 +145,13 @@ describe('handler dispatch (kakoune 2026.05+)', function()
     h.eq(5, cursor.column)
   end)
 
-  it('draw_status dispatches draw_mode + set_prompt with typed args', function()
+  it('draw_status dispatches statusbar.render with typed args', function()
     local res = with_handlers([[
       Handlers:draw_status({
         { { face = { fg = 'rgb:ebdbb2', bg = 'default', underline = 'default', attributes = {} },
             contents = ':' } },
-        { { face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
-            contents = 'hello' } },
+        { { { face = { fg = 'default', bg = 'default', underline = 'default', attributes = {} },
+              contents = 'hello' } } },
         1,
         { { face = { fg = 'rgb:282828', bg = 'rgb:ebdbb2', underline = 'default', attributes = {} },
             contents = 'NORMAL' } },
@@ -139,14 +159,17 @@ describe('handler dispatch (kakoune 2026.05+)', function()
         'command',
       })
     ]])
-    h.eq(2, #res.renderer)
-    h.eq('draw_mode', res.renderer[1][1])
-    h.eq('NORMAL', res.renderer[1][2][1].contents)
-    h.eq('set_prompt', res.renderer[2][1])
-    h.eq(':', res.renderer[2][2][1].contents)
-    h.eq('hello', res.renderer[2][3][1][1].contents)
-    h.eq(1, res.renderer[2][4])
-    h.eq('command', res.renderer[2][6])
+    h.eq(0, #res.renderer)
+    h.eq(1, #res.statusbar)
+    local call = res.statusbar[1]
+    -- win may be nil because the test fixture sets Handlers.surface = nil;
+    -- the stub still records the call regardless.
+    h.eq(nil, call.win)
+    h.eq(':', call.prompt[1].contents)
+    h.eq('hello', call.content[1][1].contents)
+    h.eq(1, call.cursor)
+    h.eq('NORMAL', call.mode_line[1].contents)
+    h.eq('command', call.style)
   end)
 
   it('menu_show dispatches to popups:menu_show with typed args', function()
@@ -207,8 +230,9 @@ describe('handler dispatch (kakoune 2026.05+)', function()
         'status',
       })
     ]])
-    h.eq(2, #res.renderer)
-    h.eq('status', res.renderer[2][6])
+    h.eq(0, #res.renderer)
+    h.eq(1, #res.statusbar)
+    h.eq('status', res.statusbar[1].style)
   end)
 
   it('tolerates draw with vim.NIL face args (no crash, dispatch happens)', function()

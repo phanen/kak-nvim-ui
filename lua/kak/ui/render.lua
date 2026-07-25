@@ -1,11 +1,9 @@
 ---
---- Renders Kakoune `draw` / `draw_status` output into nvim buffers.
+--- Renders Kakoune `draw` output into the content buffer.
 ---
---- Layout:
----   * `content_buf` -- the main buffer. Holds the display_lines that
----     Kakoune draws. Cursor is placed here.
----   * `mode_buf`    -- one-line scratch buffer for the statusline mode
----     line from `draw_status`.
+--- The statusline / cmdline is rendered by `kak.ui.statusbar` onto
+--- nvim's native `&statusline`; this module only handles the content
+--- buffer (extension-row formula, extmark highlights, cursor cell).
 
 ---@alias kak.ui.render.DrawStyle kak.ui.protocol.DrawStyle
 
@@ -13,33 +11,19 @@
 ---@field line integer
 ---@field column integer
 
----@class kak.ui.render.PromptState
----@field open boolean
----@field prompt kak.ui.protocol.Line?
----@field content string[]
----@field cursor integer
----@field face kak.ui.faces.Face?
----@field style kak.ui.protocol.DrawStyle
-
 ---@class kak.ui.render.Renderer
 ---@field faces kak.ui.faces.Cache
 ---@field content_buf integer?
----@field mode_buf integer?
 ---@field set_lines_cache string[]
 ---@field last_cursor kak.ui.render.CursorPos
----@field prompt_state kak.ui.render.PromptState
 ---@field set_buf fun(self: kak.ui.render.Renderer, buf: integer)
----@field set_mode_buf fun(self: kak.ui.render.Renderer, buf: integer)
 ---@field draw fun(self: kak.ui.render.Renderer, lines: kak.ui.protocol.Lines, cursor_pos: kak.ui.render.CursorPos?, default_face: kak.ui.faces.Face?, padding_face: kak.ui.faces.Face?)
----@field draw_mode fun(self: kak.ui.render.Renderer, mode_line: kak.ui.protocol.Line?, default_face: kak.ui.faces.Face?)
----@field set_prompt fun(self: kak.ui.render.Renderer, prompt_line: kak.ui.protocol.Line?, content_line: kak.ui.protocol.Lines?, cursor_col: integer, default_face: kak.ui.faces.Face?, style: kak.ui.protocol.DrawStyle?)
 ---@field _place_cursor fun(self: kak.ui.render.Renderer, buf: integer, coord: kak.ui.render.CursorPos, face_for_default: kak.ui.faces.Face?)
 
 local M = {}
 
 local CONTENT_NS = vim.api.nvim_create_namespace('kak.ui.render.content')
 local CURSOR_NS = vim.api.nvim_create_namespace('kak.ui.render.cursor')
-local MODE_NS = vim.api.nvim_create_namespace('kak.ui.render.mode')
 
 --- Convert a codepoint column to a byte offset within `line`.
 --- @param line string
@@ -152,26 +136,14 @@ end
 local Renderer = {}
 Renderer.__index = Renderer
 
----@param opts? { faces: kak.ui.faces.Cache }
+---@param opts { faces: kak.ui.faces.Cache }
 ---@return kak.ui.render.Renderer
 function M.new(opts)
-  ---@cast opts -nil
-  ---@type kak.ui.render.PromptState
-  local prompt_state = {
-    open = false,
-    prompt = nil,
-    content = {},
-    cursor = 0,
-    face = nil,
-    style = 'status',
-  }
   return setmetatable({
     faces = opts.faces,
     content_buf = nil,
-    mode_buf = nil,
     set_lines_cache = {},
     last_cursor = { line = 0, column = 0 },
-    prompt_state = prompt_state,
   }, Renderer)
 end
 
@@ -181,9 +153,6 @@ function Renderer:set_buf(buf)
   self.set_lines_cache = {}
   vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 end
-
----@param buf integer
-function Renderer:set_mode_buf(buf) self.mode_buf = buf end
 
 --- Render `lines` into the content buffer. Per-atom extmark highlights
 --- are applied for cells whose face differs from `default_face`.
@@ -271,56 +240,7 @@ function Renderer:_place_cursor(buf, coord, face_for_default)
     right_gravity = false,
   })
   local win = vim.fn.bufwinid(buf)
-  if win and win > 0 then pcall(vim.api.nvim_win_set_cursor, win, { row + 1, col }) end
-end
-
----@param buf integer?
-function Renderer.hide_cursor(buf)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
-  vim.api.nvim_buf_clear_namespace(buf, CURSOR_NS, 0, -1)
-end
-
----@param mode_line kak.ui.protocol.Line?
----@param default_face kak.ui.faces.Face?
-function Renderer:draw_mode(mode_line, default_face)
-  local buf = self.mode_buf
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
-  local text = compose_one_line(mode_line or {})
-  vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { text })
-  vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
-  vim.api.nvim_buf_clear_namespace(buf, MODE_NS, 0, -1)
-  local byte = 0
-  for _, atom in ipairs(mode_line or {}) do
-    local s = atom.contents or ''
-    local end_byte = byte + #s
-    if s ~= '' and not full_face_equal(atom.face, default_face) then
-      local hl = self.faces:get(atom.face)
-      if hl then
-        pcall(vim.api.nvim_buf_set_extmark, buf, MODE_NS, 0, byte, {
-          end_col = end_byte,
-          hl_group = hl,
-          right_gravity = false,
-        })
-      end
-    end
-    byte = end_byte
-  end
-end
-
----@param prompt_line kak.ui.protocol.Line?
----@param content_line kak.ui.protocol.Lines?
----@param cursor_col integer
----@param default_face kak.ui.faces.Face?
----@param style kak.ui.protocol.DrawStyle?
-function Renderer:set_prompt(prompt_line, content_line, cursor_col, default_face, style)
-  ---@type kak.ui.render.PromptState
-  local s = self.prompt_state
-  s.prompt = prompt_line
-  s.content = compose_text(content_line)
-  s.cursor = cursor_col
-  s.face = default_face
-  s.style = style or 'status'
+  if win and win > 0 then pcall(vim.nvim_win_set_cursor, win, { row + 1, col }) end
 end
 
 ---@type fun(line: string, column: integer): integer

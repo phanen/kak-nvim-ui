@@ -27,7 +27,6 @@ function Handlers.setup(opts)
   })
   if opts.surface then
     if opts.surface.content_buf then Handlers.renderer:set_buf(opts.surface.content_buf) end
-    if opts.surface.mode_buf then Handlers.renderer:set_mode_buf(opts.surface.mode_buf) end
   end
 end
 
@@ -37,11 +36,6 @@ function Handlers:ensure_buf()
     self.renderer:set_buf(vim.api.nvim_create_buf(false, true))
     vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = self.renderer.content_buf })
     vim.api.nvim_set_option_value('swapfile', false, { buf = self.renderer.content_buf })
-  end
-  if not self.renderer.mode_buf or not vim.api.nvim_buf_is_valid(self.renderer.mode_buf) then
-    self.renderer:set_mode_buf(vim.api.nvim_create_buf(false, true))
-    vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = self.renderer.mode_buf })
-    vim.api.nvim_set_option_value('swapfile', false, { buf = self.renderer.mode_buf })
   end
   local buf = self.renderer.content_buf
   ---@cast buf integer
@@ -65,22 +59,26 @@ function Handlers:draw_status(raw)
   if P.absent(cursor) or type(cursor) ~= 'number' then
     error('draw_status: cursor_pos @3 must be integer', 2)
   end
-  local valid = { command = true, search = true, prompt = true, status = true }
-  self:ensure_buf()
-  self.renderer:draw_mode(
-    P.parse_line('draw_status', raw[4], 4),
-    P.parse_face('draw_status', raw[5], 5)
-  )
   ---@cast cursor integer
-  local cursor_i = cursor
+  local valid = { command = true, search = true, prompt = true, status = true }
+  local prompt = P.parse_line('draw_status', raw[1], 1)
+  local content = P.parse_lines('draw_status', raw[2], 2)
+  local face = P.parse_face('draw_status', raw[5], 5)
+  -- check_enum runs after parsing the face so wire_log_spec's unknown
+  -- style test still produces both the 'handler' and 'draw_status'
+  -- log lines (the error fires through init.lua's on_notify pcall).
   local style = P.check_enum('draw_status', raw[6] or 'status', valid, 6)
   ---@cast style kak.ui.protocol.DrawStyle
-  self.renderer:set_prompt(
-    P.parse_line('draw_status', raw[1], 1),
-    P.parse_lines('draw_status', raw[2], 2),
-    cursor_i,
-    P.parse_face('draw_status', raw[5], 5),
-    style
+  local win = self.surface and self.surface.content_win or nil
+  require('kak.ui.statusbar').render(
+    win,
+    prompt,
+    content,
+    cursor,
+    P.parse_line('draw_status', raw[4], 4),
+    face,
+    style,
+    self.faces
   )
 end
 

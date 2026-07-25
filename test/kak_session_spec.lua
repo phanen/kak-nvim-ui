@@ -51,26 +51,27 @@ describe('kak renders buffer + grid', function()
 
   it('renders a multi-line file into the content buffer', function()
     local file = tmp_with({ 'alpha line', 'beta line', 'gamma line' })
-    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file } }, function(sess)
+    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file }, keep_open = true }, function(sess)
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
         return #lines >= 3 and lines[1] == 'alpha line'
       end)
     end)
 
+    -- New layout: no tabline; 3 content rows + 20 tildes + statusline.
+    -- Cursor col 0 puts `^` before the first content line.
     screen:expect([[
-      {MATCH:^.*k//main.*}
       {MATCH:alpha line}
       {MATCH:beta line}
       {MATCH:gamma line}
-      {MATCH:.*~.*}|*19
-      {MATCH:^ *}
+      {MATCH:.*~.*}|*20
+      {MATCH:.*}
     ]])
   end)
 
   it('renders a single-line file', function()
     local file = tmp_with({ 'only line' })
-    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file } }, function(sess)
+    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file }, keep_open = true }, function(sess)
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
         return #lines >= 1 and lines[1] == 'only line'
@@ -78,29 +79,33 @@ describe('kak renders buffer + grid', function()
     end)
     screen:snapshot_util()
 
+    -- New layout: no tabline; content starts at row 0; statusline
+    -- (mode_line text from draw_status) at the last row. Buffer area
+    -- is lines-1 = 23 rows: 1 content row + 22 tildes, then the
+    -- statusline at the final row. The `^` prefix on the content row
+    -- is the nvim cursor marker (cursor col 0 on "only line").
     screen:expect([[
-      {MATCH:^.*k//main.*}
       {MATCH:only line}
-      {MATCH:.*~.*}|*21
-      {MATCH:^ *}
+      {MATCH:.*~.*}|*22
+      {MATCH:.*}
     ]])
   end)
 
   it('renders an empty file as all-tildes grid', function()
     local file = tmp_with({})
-    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file } }, function(sess)
+    h.with_kak_session({ extra_args = { '-e', 'edit ' .. file }, keep_open = true }, function(sess)
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
         return #lines >= 1
       end)
     end)
 
-    -- 1 mode + 1 cursor-on-empty row + 21 tildes + 1 cmdline.
+    -- New layout: no tabline; cursor row (^ on empty first row) + 22 tildes
+    -- + statusline at last row.
     screen:expect([[
-      {MATCH:^.*k//main.*}
-      {MATCH:^ *}
-      {MATCH:.*~.*}|*21
-      {MATCH:^ *}
+      {MATCH:^}
+      {MATCH:.*~.*}|*22
+      {MATCH:.*}
     ]])
   end)
 
@@ -110,6 +115,7 @@ describe('kak renders buffer + grid', function()
     local file2 = tmp_with({ 'second-A', 'second-B' })
     h.with_kak_session({
       extra_args = { '-e', 'edit ' .. file1 .. '; edit ' .. file2 },
+      keep_open = true,
     }, function(sess)
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
@@ -117,12 +123,14 @@ describe('kak renders buffer + grid', function()
       end)
     end)
 
+    -- New layout: 2 content rows + 21 tildes + statusline. The `-`
+    -- in `second-A` is a literal Lua pattern dash inside a character
+    -- class, not a range.
     screen:expect([[
-      {MATCH:^.*k//main.*}
       {MATCH:second%-A}
       {MATCH:second%-B}
-      {MATCH:.*~.*}|*20
-      {MATCH:^ *}
+      {MATCH:.*~.*}|*21
+      {MATCH:.*}
     ]])
   end)
 
@@ -131,6 +139,7 @@ describe('kak renders buffer + grid', function()
     local file = tmp_with({ 'one', 'two', 'three' })
     h.with_kak_session({
       extra_args = { '-e', 'edit ' .. file .. '; select 1.0' },
+      keep_open = true,
     }, function(sess)
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
@@ -141,12 +150,11 @@ describe('kak renders buffer + grid', function()
     -- The cursor glyph `^` is auto-prepended to the focused row;
     -- use {MATCH:two} not {MATCH:^two}.
     screen:expect([[
-      {MATCH:^.*k//main.*}
       {MATCH:one}
       {MATCH:two}
       {MATCH:three}
-      {MATCH:.*~.*}|*19
-      {MATCH:^ *}
+      {MATCH:.*~.*}|*20
+      {MATCH:.*}
     ]])
   end)
 end)

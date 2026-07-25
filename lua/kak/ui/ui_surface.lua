@@ -1,9 +1,13 @@
 ---
 --- Tab/window lifecycle for the Kakoune JSON-UI render area.
 ---
---- A `Surface` owns the two scratch buffers (content + mode) and the
---- window that displays them. It also handles the resize-reporting hook
---- so the render area stays in sync with `kak -ui json`.
+--- A `Surface` owns the content buffer (the Kakoune edit area) and the
+--- window that displays it. It also handles the resize-reporting hook
+--- so the render area stays in sync with `kak -ui json`. The statusline
+--- + cmdline lives on nvim's native `&statusline` (see
+--- `lua/kak/ui/statusbar.lua`); `Surface:open` reserves that bottom row
+--- by flipping `laststatus=2` + `showtabline=0` + `cmdheight=0` and
+--- saves the previous values so `Surface:close` can restore them.
 ---
 --- Kakoune is a single-window editor, so this plugin claims exactly one
 --- tab + one window per session and never creates splits: a normal-mode
@@ -20,8 +24,8 @@
 ---@field session? string
 ---@field rpc? kak.ui.json_rpc.Connection
 ---@field content_buf integer?
----@field mode_buf integer?
 ---@field content_win integer?
+---@field saved? { showtabline: integer, laststatus: integer, cmdheight: integer }
 ---@field open fun(self: kak.ui.surface.Surface, opts?: kak.ui.surface.SurfaceOpenOpts)
 ---@field close fun(self: kak.ui.surface.Surface)
 ---@field report_resize fun(self: kak.ui.surface.Surface)
@@ -47,7 +51,6 @@ function M.new(opts)
     session = opts.session,
     rpc = nil,
     content_buf = nil,
-    mode_buf = nil,
     content_win = nil,
   }, Surface)
 end
@@ -59,14 +62,11 @@ function Surface:open(opts)
   if opts.session then self.session = opts.session end
 
   self.content_buf = vim.api.nvim_create_buf(false, true)
-  self.mode_buf = vim.api.nvim_create_buf(false, true)
 
   vim.bo[self.content_buf].bufhidden = 'wipe'
   vim.bo[self.content_buf].swapfile = false
   vim.bo[self.content_buf].buftype = 'nofile'
   vim.bo[self.content_buf].filetype = 'kak-ui'
-  vim.bo[self.mode_buf].bufhidden = 'wipe'
-  vim.bo[self.mode_buf].swapfile = false
 
   -- TODO(preserve-existing-buffer): decide whether the current window
   -- already shows an empty, unlisted, ft-empty buffer. If so we reuse
@@ -100,9 +100,29 @@ function Surface:open(opts)
   -- The buffer was just created unlisted; nvim_buf_set_name is a
   -- straight setter and does not fail in normal flow.
   vim.api.nvim_buf_set_name(self.content_buf, bufname(self.session))
+
+  -- Reserve the bottom row for the Kakoune statusline and remove the
+  -- stray nvim tabline / cmdline so the statusline IS the last row
+  -- and nvim's own cmdline cannot activate (`:`, `/`).
+  self.saved = {
+    showtabline = vim.o.showtabline,
+    laststatus = vim.o.laststatus,
+    cmdheight = vim.o.cmdheight,
+  }
+  vim.o.showtabline = 0
+  vim.o.laststatus = 2
+  vim.o.cmdheight = 0
 end
 
 function Surface:close()
+  -- Restore global options that `open` mutated. Guard nil so close is
+  -- safe to call before open (or twice).
+  if self.saved then
+    vim.o.showtabline = self.saved.showtabline
+    vim.o.laststatus = self.saved.laststatus
+    vim.o.cmdheight = self.saved.cmdheight
+    self.saved = nil
+  end
   -- Detach: drop our references to the buffers/window. The window itself
   -- stays open so external code (e.g. screen tests) can keep observing
   -- the rendered buffer; bufhidden=wipe handles cleanup when nvim
@@ -110,7 +130,6 @@ function Surface:close()
   -- the VimLeavePre autocmd installed in init.lua.
   self.content_win = nil
   self.content_buf = nil
-  self.mode_buf = nil
   self.rpc = nil
 end
 

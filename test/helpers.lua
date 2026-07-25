@@ -33,7 +33,7 @@ local function truncate_log(logfile)
   f:close()
 end
 
----@param opts { cmd?: string[], extra_args?: string[], wire_log?: string, log_level?: string }
+---@param opts { cmd?: string[], extra_args?: string[], wire_log?: string, log_level?: string, keep_open?: boolean }
 ---@param body fun(sess: any, ...): any
 function M.with_kak_session(opts, body, ...)
   local cmd = opts.cmd or { 'kak' }
@@ -49,17 +49,30 @@ function M.with_kak_session(opts, body, ...)
   -- scope is lost. Tests that need to capture wire should define the
   -- capture closure inside `body`, where it shares upvalues with the
   -- captured table directly.
-  local ok, result = pcall(exec_lua, function(cmd, extra_args, wire_log, log_level, body_src, ...)
-    if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
-      vim.env.KAK_UI_LOG_FILE = wire_log
-      vim.env.KAK_UI_LOG_LEVEL = log_level
-    end
-    local body = assert(loadstring(body_src))
-    local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
-    local got = body(sess, ...)
-    sess:close()
-    return got
-  end, cmd, extra_args, opts.wire_log or '', log_level, string.dump(body), ...)
+  -- `keep_open` skips the implicit `sess:close()` so tests that take
+  -- screen snapshots AFTER the body returns still see the layout the
+  -- plugin set up (the close path restores global options).
+  local ok, result = pcall(
+    exec_lua,
+    function(cmd, extra_args, wire_log, log_level, keep_open, body_src, ...)
+      if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
+        vim.env.KAK_UI_LOG_FILE = wire_log
+        vim.env.KAK_UI_LOG_LEVEL = log_level
+      end
+      local body = assert(loadstring(body_src))
+      local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
+      local got = body(sess, ...)
+      if not keep_open then sess:close() end
+      return got
+    end,
+    cmd,
+    extra_args,
+    opts.wire_log or '',
+    log_level,
+    opts.keep_open or false,
+    string.dump(body),
+    ...
+  )
 
   M.sleep(200)
   if not ok then error(result) end
