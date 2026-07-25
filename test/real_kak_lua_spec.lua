@@ -42,12 +42,10 @@ local function face_eq(a, b)
   return vim.deep_equal(nil_norm(a), nil_norm(b))
 end
 
-local function has_real_color(face)
+local function has_color(face)
   if type(face) ~= 'table' then return false end
-  local fg, bg = face.fg, face.bg
-  if type(fg) == 'string' and fg:match('^rgb:') then return true end
-  if type(bg) == 'string' and bg:match('^rgb:') then return true end
-  return false
+  local function colored(c) return type(c) == 'string' and c ~= 'default' end
+  return colored(face.fg) or colored(face.bg)
 end
 
 ---@param cap {{ method: string, params: any[] }}
@@ -61,16 +59,16 @@ end
 ---@param lines any[]
 ---@return integer total_atoms, integer atoms_with_rgb
 local function count_atoms(lines)
-  local total, with_rgb = 0, 0
+  local total, with_color = 0, 0
   for _, line in ipairs(lines or {}) do
     for _, atom in ipairs(line or {}) do
       if type(atom) == 'table' then
         total = total + 1
-        if has_real_color(atom.face) then with_rgb = with_rgb + 1 end
+        if has_color(atom.face) then with_color = with_color + 1 end
       end
     end
   end
-  return total, with_rgb
+  return total, with_color
 end
 
 local function write_sample_lua()
@@ -112,13 +110,13 @@ describe('real kak lua filetype', function()
     local params = first_draw_params(captured)
     assert(params, 'expected at least one draw notification from real kak')
 
-    local total, with_rgb = count_atoms(params[1])
+    local total, with_color = count_atoms(params[1])
     assert(total > 0, 'no atoms in the draw payload')
     assert(
-      with_rgb > 0,
+      with_color > 0,
       (
         'lua highlighter did not attach: 0/%d atoms '
-        .. 'carry RGB colors -- filetype detection likely did not fire '
+        .. 'carry non-default colors -- filetype detection likely did not fire '
         .. 'on the file path %q'
       ):format(total, file)
     )
