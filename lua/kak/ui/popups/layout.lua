@@ -28,6 +28,32 @@ local MENU_MAX_HEIGHT = 20
 local INFO_MAX_HEIGHT_FLOOR = 5
 local INFO_MAX_WIDTH_FLOOR = 20
 
+-- Named reference points for fixed info styles. Geometry (height /
+-- width) is filled in by `info_geom`; these are just the (row, col)
+-- pre-size. Add a new anchor by adding a key here; the dispatcher in
+-- `info_pos` reads it from the table.
+---@alias kak.ui.popups.layout.AnchorPoint
+---| 'editor_corner' -- SE corner of the editor
+---| 'editor_origin' -- NW corner
+---| 'editor_right'  -- right edge at row 0
+
+---@type table<kak.ui.popups.layout.AnchorPoint, fun(editor_h: integer, editor_w: integer): integer, integer>
+local ANCHOR_POINTS = {
+  editor_corner = function(h, w) return h, w end,
+  editor_origin = function() return 0, 0 end,
+  editor_right = function(_, w) return 0, w end,
+}
+
+--- Style -> (win_anchor, reference point). The (row, col) of the
+--- placeholder geom is derived from the point; `info_geom` later
+--- replaces height/width and adjusts row/col for content.
+---@type table<string, { win_anchor: 'NW'|'NE'|'SW'|'SE', point: kak.ui.popups.layout.AnchorPoint }>
+local INFO_ANCHORS = {
+  prompt = { win_anchor = 'SE', point = 'editor_corner' },
+  modal = { win_anchor = 'NW', point = 'editor_origin' },
+  menuDoc = { win_anchor = 'NW', point = 'editor_right' },
+}
+
 ---@param style kak.ui.protocol.MenuStyle
 ---@param item_count integer
 ---@return kak.ui.popups.layout.MenuKind
@@ -150,17 +176,11 @@ end
 
 --- Compose info window geometry.
 ---
----   * `prompt` (help popup)         -> SE at editor's south-east
----   * `modal`                       -> NW centered (Kakoune
----                                      line 1393). If `menu_rect` is
----                                      present, subtract its height
----                                      from the centre (per spec
----                                      bug-fix C-3).
----   * `menuDoc`                     -> Kakoune line 1396-1404
----                                      right/left choice. With no
----                                      active menu, default to right
----                                      side anchored at `anchor.line`.
----   * `inline{,Above,Below}`        -> `compute_pos`-like; not float.
+--- For fixed-anchor styles (`prompt`, `modal`, `menuDoc`), the
+--- (row, col, win_anchor) is read from `INFO_ANCHORS`; `info_geom`
+--- then fills in height/width and adjusts row/col for content.
+--- For inline styles, position is derived from `anchor.line` and
+--- `content_buf`.
 ---
 ---@param style kak.ui.protocol.InfoStyle
 ---@param anchor kak.ui.protocol.Coord
@@ -172,14 +192,10 @@ function M.info_pos(style, anchor, content_buf, editor_dims)
   local editor_h = ed.line
   local editor_w = ed.column
 
-  if style == 'prompt' then
-    return { win_anchor = 'SE', row = editor_h, col = editor_w, height = 0, width = 0 }
-  end
-
-  if style == 'modal' then return { win_anchor = 'NW', row = 0, col = 0, height = 0, width = 0 } end
-
-  if style == 'menuDoc' then
-    return { win_anchor = 'NW', row = 0, col = editor_w, height = 0, width = 0 }
+  local entry = INFO_ANCHORS[style]
+  if entry then
+    local row, col = ANCHOR_POINTS[entry.point](editor_h, editor_w)
+    return { win_anchor = entry.win_anchor, row = row, col = col, height = 0, width = 0 }
   end
 
   local total = (content_buf and vim.api.nvim_buf_is_valid(content_buf))

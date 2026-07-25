@@ -11,7 +11,6 @@
 --- dispatcher.
 
 local json_rpc = require('kak.ui.json_rpc')
-local protocol = require('kak.ui.protocol')
 local surface_mod = require('kak.ui.ui_surface')
 local handlers = require('kak.ui.handlers')
 local input = require('kak.ui.input')
@@ -19,16 +18,16 @@ local log = require('kak.ui.log').log
 
 ---@alias kak.ui.OpenOpts { session?: string, cmd?: string[], extra_args?: string[], cwd?: string, env?: table<string, string> }
 
+--- A Session owns the rpc + input bindings + close; everything else
+--- (renderer, faces, popups, surface, handlers dispatch) lives on the
+--- `kak.ui.Handlers` module and is reached via `__index` so this
+--- class does not have to enumerate the actor's fields.
 ---@class kak.ui.Session
 ---@field conn kak.ui.json_rpc.Connection
 ---@field buf integer
----@field handlers table<string, function>
----@field renderer kak.ui.render.Renderer
----@field faces kak.ui.faces.Cache
----@field popups kak.ui.popups.Manager
 ---@field input kak.ui.input.Handler
----@field surface kak.ui.surface.Surface
 ---@field close fun(self: kak.ui.Session)
+---@field __index kak.ui.Handlers
 
 local M = {}
 
@@ -68,17 +67,13 @@ function M.open(opts)
   local surface = surface_mod.new({ session = session })
   surface:open({ session = session })
 
-  local h = handlers.build(ctx, ui_options, surface, nil)
+  handlers.setup({ ctx = ctx, ui_options = ui_options, surface = surface })
 
   local dispatchers = {
     on_notify = function(method, params)
-      local fn = h.handlers[method]
+      local fn = handlers[method]
       if fn then
-        local ok, err = pcall(
-          function()
-            fn(protocol.decode({ jsonrpc = '2.0', method = method, params = params }).params)
-          end
-        )
+        local ok, err = pcall(function() fn(handlers, params or {}) end)
         if not ok then log.warn('handler', method, 'error:', tostring(err)) end
       end
     end,
@@ -109,7 +104,7 @@ function M.open(opts)
   })
   surface.rpc = conn
 
-  local buf = h.ensure_buf()
+  local buf = handlers:ensure_buf()
   local input_handler = input.new({ rpc = conn })
   input_handler:enable(buf)
 
@@ -129,21 +124,20 @@ function M.open(opts)
   })
 
   ---@type kak.ui.Session
+  -- `handlers` is the dispatch surface (module-as-actor). Fall
+  -- through to it via __index so this table doesn't have to enumerate
+  -- its fields -- adding a new field on `Handlers` makes it reachable
+  -- here without touching this file.
   sess = setmetatable({
     conn = conn,
     buf = buf,
-    handlers = h.handlers,
-    renderer = h.renderer,
-    faces = h.faces,
-    popups = h.popups,
     input = input_handler,
-    surface = surface,
     close = function()
       conn:terminate()
-      surface:close()
+      handlers.surface:close()
       if ACTIVE == sess then ACTIVE = nil end
     end,
-  }, {})
+  }, { __index = handlers })
   ACTIVE = sess
   return sess
 end

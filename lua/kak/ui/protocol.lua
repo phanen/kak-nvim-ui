@@ -1,8 +1,10 @@
 ---
---- Parses and dispatches Kakoune JSON-UI messages. Wire format matches
---- Kakoune master per doc/json_ui.asciidoc.
+--- Wire-format primitives for Kakoune JSON-UI messages.
 ---
---- One JSON object per `\n`-terminated chunk. Params are positional arrays.
+--- `vim.json.decode` already produces Lua tables; this module just
+--- normalizes faces / coords / enums and tolerates `vim.NIL`. The
+--- per-method notification dispatch lives in `kak.ui.handlers` --
+--- this module has no HANDLERS table of its own.
 
 ---@alias kak.ui.protocol.AtomFace kak.ui.faces.Face
 ---@alias kak.ui.protocol.Atom { face: kak.ui.protocol.AtomFace?, contents: string }
@@ -19,79 +21,22 @@
 ---| 'menuDoc'
 ---| 'modal'
 
----@class kak.ui.protocol.DrawParams
----@field lines kak.ui.protocol.Lines
----@field cursor_pos kak.ui.protocol.Coord
----@field default_face kak.ui.faces.Face?
----@field padding_face kak.ui.faces.Face?
----@field widget_columns integer
-
----@class kak.ui.protocol.DrawStatusParams
----@field prompt kak.ui.protocol.Line
----@field content kak.ui.protocol.Line
----@field cursor_pos integer
----@field mode_line kak.ui.protocol.Line
----@field default_face kak.ui.faces.Face?
----@field style kak.ui.protocol.DrawStyle
-
----@class kak.ui.protocol.MenuShowParams
----@field items kak.ui.protocol.Lines
----@field anchor kak.ui.protocol.Coord
----@field fg kak.ui.faces.Face?
----@field bg kak.ui.faces.Face?
----@field style kak.ui.protocol.MenuStyle
-
----@class kak.ui.protocol.MenuSelectParams
----@field selected integer
-
----@class kak.ui.protocol.MenuHideParams
-
----@class kak.ui.protocol.InfoShowParams
----@field title kak.ui.protocol.Line
----@field content kak.ui.protocol.Lines
----@field anchor kak.ui.protocol.Coord
----@field face kak.ui.faces.Face?
----@field style kak.ui.protocol.InfoStyle
-
----@class kak.ui.protocol.InfoHideParams
-
----@class kak.ui.protocol.RefreshParams
----@field force boolean
-
----@class kak.ui.protocol.SetUiOptionsParams
----@field options table<string, any>
-
----@alias kak.ui.protocol.Params
----| kak.ui.protocol.DrawParams
----| kak.ui.protocol.DrawStatusParams
----| kak.ui.protocol.MenuShowParams
----| kak.ui.protocol.MenuSelectParams
----| kak.ui.protocol.MenuHideParams
----| kak.ui.protocol.InfoShowParams
----| kak.ui.protocol.InfoHideParams
----| kak.ui.protocol.RefreshParams
----| kak.ui.protocol.SetUiOptionsParams
-
----@class kak.ui.protocol.Decoded
----@field method string
----@field params kak.ui.protocol.Params
-
 local M = {}
-
-local log = require('kak.ui.log').log
 
 local NIL = vim.NIL or setmetatable({}, { __tostring = function() return 'vim.NIL' end })
 
--- Tolerate Lua `nil` and `vim.NIL` (what `vim.json.decode` returns for
--- JSON `null`); both mean "absent" on the wire.
-local function absent(v) return v == nil or v == NIL end
+--- Tolerate Lua `nil` and `vim.NIL` (what `vim.json.decode` returns for
+--- JSON `null`); both mean "absent" on the wire.
+---@param v any
+---@return boolean
+function M.absent(v) return v == nil or v == NIL end
 
 ---@param name string
 ---@param params any?
 ---@param min integer?
 ---@return table
-local function expect_array(name, params, min)
-  if absent(params) then error(name .. ': params must be array', 3) end
+function M.expect_array(name, params, min)
+  if M.absent(params) then error(name .. ': params must be array', 3) end
   if type(params) ~= 'table' then
     error(name .. ': params must be array, got ' .. type(params), 3)
   end
@@ -102,13 +47,12 @@ end
 ---@param method string
 ---@param v any
 ---@return string?
-local function parse_color(method, v)
-  if absent(v) or v == 'default' then return nil end
+function M.parse_color(method, v)
+  if M.absent(v) or v == 'default' then return nil end
   if type(v) ~= 'string' then error(method .. ': color must be string', 3) end
   if v:sub(1, 1) == '#' and #v == 7 then return v end
   if v:sub(1, 4) == 'rgb:' and #v == 10 then return '#' .. v:sub(5) end
   if v:sub(1, 5) == 'rgba:' and #v == 13 then return '#' .. v:sub(6, 11) end
-  -- Named color or unknown; pass through and let the face mapper handle it.
   return v
 end
 
@@ -116,15 +60,15 @@ end
 ---@param face any
 ---@param idx any
 ---@return kak.ui.faces.Face?
-local function parse_face(method, face, idx)
-  if absent(face) then return nil end
+function M.parse_face(method, face, idx)
+  if M.absent(face) then return nil end
   if type(face) ~= 'table' then
     error(method .. ': face @' .. tostring(idx) .. ' must be table', 3)
   end
   return {
-    fg = parse_color(method, face.fg),
-    bg = parse_color(method, face.bg),
-    underline = parse_color(method, face.underline),
+    fg = M.parse_color(method, face.fg),
+    bg = M.parse_color(method, face.bg),
+    underline = M.parse_color(method, face.underline),
     attributes = (type(face.attributes) == 'table') and face.attributes or {},
   }
 end
@@ -133,8 +77,8 @@ end
 ---@param coord any
 ---@param idx any
 ---@return kak.ui.protocol.Coord
-local function parse_coord(method, coord, idx)
-  if absent(coord) or type(coord) ~= 'table' then
+function M.parse_coord(method, coord, idx)
+  if M.absent(coord) or type(coord) ~= 'table' then
     error(method .. ': coord @' .. tostring(idx) .. ' missing', 3)
   end
   if type(coord.line) ~= 'number' or type(coord.column) ~= 'number' then
@@ -147,17 +91,17 @@ end
 ---@param line any
 ---@param idx any
 ---@return kak.ui.protocol.Line
-local function parse_line(method, line, idx)
-  if absent(line) or type(line) ~= 'table' then
+function M.parse_line(method, line, idx)
+  if M.absent(line) or type(line) ~= 'table' then
     error(method .. ': line @' .. tostring(idx) .. ' must be array of atoms', 3)
   end
   local atoms = {}
   for i, atom in ipairs(line) do
-    if absent(atom) or type(atom) ~= 'table' then
+    if M.absent(atom) or type(atom) ~= 'table' then
       error(method .. ': atom @' .. tostring(idx) .. '.' .. i .. ' must be table', 3)
     end
     atoms[i] = {
-      face = parse_face(method, atom.face, idx .. '.' .. i),
+      face = M.parse_face(method, atom.face, idx .. '.' .. i),
       contents = atom.contents or '',
     }
   end
@@ -168,13 +112,13 @@ end
 ---@param lines any
 ---@param idx any
 ---@return kak.ui.protocol.Lines
-local function parse_lines(method, lines, idx)
-  if absent(lines) or type(lines) ~= 'table' then
+function M.parse_lines(method, lines, idx)
+  if M.absent(lines) or type(lines) ~= 'table' then
     error(method .. ': lines @' .. tostring(idx) .. ' must be array of lines', 3)
   end
   local out = {}
   for i, line in ipairs(lines) do
-    out[i] = parse_line(method, line, idx .. '.' .. i)
+    out[i] = M.parse_line(method, line, idx .. '.' .. i)
   end
   return out
 end
@@ -184,140 +128,11 @@ end
 ---@param valid table<string, boolean>
 ---@param idx any
 ---@return string
-local function check_enum(method, val, valid, idx)
+function M.check_enum(method, val, valid, idx)
   if not valid[val] then
     error(method .. ': bad enum value ' .. tostring(val) .. ' @' .. tostring(idx), 3)
   end
   return val
-end
-
----@type table<string, fun(params: any): kak.ui.protocol.Params>
-local HANDLERS = {}
-
-HANDLERS.draw = function(params)
-  expect_array('draw', params, 5)
-  return {
-    lines = parse_lines('draw', params[1], 1),
-    cursor_pos = parse_coord('draw', params[2], 2),
-    default_face = parse_face('draw', params[3], 3),
-    padding_face = parse_face('draw', params[4], 4),
-    widget_columns = params[5],
-  }
-end
-
-HANDLERS.draw_status = function(params)
-  expect_array('draw_status', params, 6)
-  local cursor = params[3]
-  if absent(cursor) or type(cursor) ~= 'number' then
-    error('draw_status: cursor_pos @3 must be integer', 3)
-  end
-  local valid = { command = true, search = true, prompt = true, status = true }
-  return {
-    prompt = parse_line('draw_status', params[1], 1),
-    content = parse_line('draw_status', params[2], 2),
-    cursor_pos = cursor,
-    mode_line = parse_line('draw_status', params[4], 4),
-    default_face = parse_face('draw_status', params[5], 5),
-    style = check_enum('draw_status', params[6] or 'status', valid, 6),
-  }
-end
-
-HANDLERS.menu_show = function(params)
-  expect_array('menu_show', params, 5)
-  return {
-    items = parse_lines('menu_show', params[1], 1),
-    anchor = parse_coord('menu_show', params[2], 2),
-    fg = parse_face('menu_show', params[3], 3),
-    bg = parse_face('menu_show', params[4], 4),
-    style = check_enum('menu_show', params[5], { prompt = true, search = true, inline = true }, 5),
-  }
-end
-
-HANDLERS.menu_select = function(params)
-  expect_array('menu_select', params, 1)
-  if type(params[1]) ~= 'number' then
-    error('menu_select: expected int, got ' .. type(params[1]), 3)
-  end
-  return { selected = params[1] }
-end
-
-HANDLERS.menu_hide = function(params)
-  if params and #params > 0 then error('menu_hide: expected no params', 3) end
-  return {}
-end
-
-HANDLERS.info_show = function(params)
-  expect_array('info_show', params, 5)
-  return {
-    title = parse_line('info_show', params[1], 1),
-    content = parse_lines('info_show', params[2], 2),
-    anchor = parse_coord('info_show', params[3], 3),
-    face = parse_face('info_show', params[4], 4),
-    style = check_enum('info_show', params[5], {
-      prompt = true,
-      inline = true,
-      inlineAbove = true,
-      inlineBelow = true,
-      menuDoc = true,
-      modal = true,
-    }, 5),
-  }
-end
-
-HANDLERS.info_hide = function(params)
-  if params and #params > 0 then error('info_hide: expected no params', 3) end
-  return {}
-end
-
-HANDLERS.refresh = function(params)
-  expect_array('refresh', params, 1)
-  if type(params[1]) ~= 'boolean' then error('refresh: expected bool', 3) end
-  return { force = params[1] }
-end
-
-HANDLERS.set_ui_options = function(params)
-  expect_array('set_ui_options', params, 1)
-  if absent(params[1]) or type(params[1]) ~= 'table' then
-    error('set_ui_options: expected object of key/value', 3)
-  end
-  return { options = params[1] }
-end
-
----@param message table
----@return kak.ui.protocol.Decoded
-function M.decode(message)
-  if absent(message) or type(message) ~= 'table' then error('message must be object', 2) end
-  if message.jsonrpc ~= '2.0' then
-    error('unsupported jsonrpc version: ' .. tostring(message.jsonrpc), 2)
-  end
-  if type(message.method) ~= 'string' then error('message.method must be string', 2) end
-  local fn = HANDLERS[message.method]
-  if not fn then error('unknown method: ' .. message.method, 2) end
-  return {
-    method = message.method,
-    params = fn(message.params or {}),
-  }
-end
-
----@alias kak.ui.protocol.Handler fun(params: kak.ui.protocol.Params): nil
-
----@class kak.ui.protocol.Handlers
----@field [string] kak.ui.protocol.Handler
----@field on_default kak.ui.protocol.Handler?
-
----@param message table
----@param handlers kak.ui.protocol.Handlers
-function M.dispatch(message, handlers)
-  local decoded
-  local ok, err = pcall(function() decoded = M.decode(message) end)
-  if not ok then
-    log.warn('decode error:', tostring(err))
-    return
-  end
-  ---@cast decoded kak.ui.protocol.Decoded
-  local h = handlers['on_' .. decoded.method] or handlers.on_default
-  if not h then return end
-  h(decoded.params)
 end
 
 --- Encode a UI -> Kakoune notification.
@@ -334,6 +149,4 @@ function M.encode_notify(method, params)
   }
 end
 
----@type fun(v: any): string?
-M._parse_color = parse_color
 return M
