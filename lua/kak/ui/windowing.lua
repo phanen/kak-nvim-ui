@@ -5,9 +5,11 @@
 --- session attached to this nvim UI, Kakoune invokes a windowing-module
 --- sub-command (`<windowing_module>-terminal-<placement>` etc). The
 --- bundled `kak/nvim.kak` provides that module: each command shells
---- out to `nvim --server <listen> --remote-send ':KakNewWin ...'` so
---- the new client is hosted inside the SAME nvim instance, instead of
---- spawning a new terminal that runs another nvim.
+--- out to `nvim --server <listen> --remote-expr "execute('...')"`,
+--- which is an RPC eval that bypasses the parent nvim's `vim.on_key`
+--- hook (the kak content buffer drops every typed key and forwards
+--- it to the child kak, so a `--remote-send` of `:KakNewWin ...`
+--- would never reach the parent nvim's command line).
 ---
 --- This module owns:
 ---   * `listen_socket()` -- cached `vim.fn.serverstart()` path passed

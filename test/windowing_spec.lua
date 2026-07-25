@@ -3,11 +3,11 @@
 --
 -- These stay in-process: we only exercise the lua helpers
 -- (`inject_args`, `kak_script_path`, `focus_active`). The
--- cross-process `nvim --server --remote-send` path that the bundled
+-- cross-process `nvim --server --remote-expr` path that the bundled
 -- `kak/nvim.kak` triggers is a shell command and is exercised by the
--- kak-script syntax-check below (when a `kak` binary is available)
--- rather than via a child nvim -- which nvim-test cannot spawn
--- recursively from within itself.
+-- kak-script syntax-check + body grep below (when a `kak` binary is
+-- available) rather than via a child nvim -- which nvim-test cannot
+-- spawn recursively from within itself.
 
 local h = require('test.helpers')
 
@@ -208,6 +208,75 @@ describe('kak.ui.windowing', function()
   end)
 
   describe('kak script', function()
+    it('uses --remote-expr + execute(...) + $kak_session (regression for v1.2 bug)', function()
+      -- Regression for the "KakNewWin: no such command" bug caused
+      -- by two things combined: (1) using `--remote-send` instead of
+      -- `--remote-expr` (the kak content buffer's `vim.on_key` hook
+      -- drops every typed key, including `:...`, so the `:KakNewWin`
+      -- never reaches the parent nvim's command line), and (2)
+      -- using `$kak_opt_session` (a non-existent option; evaluates
+      -- to empty) instead of `$kak_session` (the actual session
+      -- name kak exports in `%sh{}`).
+      local script = h.fn.fnamemodify('./kak/nvim.kak', ':p')
+      if h.fn.filereadable(script) ~= 1 then return end -- spec skipped
+      local f = assert(io.open(script, 'r'))
+      local raw = f:read('*a') or ''
+      f:close()
+
+      -- Drop `#` comment lines so the explanation comment at the
+      -- top of the file (which legitimately names `--remote-send`
+      -- to explain why we don't use it) doesn't trip the negative
+      -- assertion below.
+      local body_lines = {}
+      for line in raw:gmatch('[^\n]+') do
+        if not line:match('^%s*#') then body_lines[#body_lines + 1] = line end
+      end
+      local body = table.concat(body_lines, '\n')
+
+      -- Must use the new bypass pattern.
+      assert(
+        body:find('--remote-expr', 1, true) ~= nil,
+        'kak script does not use --remote-expr: ' .. script
+      )
+      assert(
+        body:find("execute('KakNewWin window", 1, true) ~= nil,
+        'kak script missing execute(KakNewWin window ...) form'
+      )
+      assert(
+        body:find("execute('KakNewWin horizontal", 1, true) ~= nil,
+        'kak script missing execute(KakNewWin horizontal ...) form'
+      )
+      assert(
+        body:find("execute('KakNewWin vertical", 1, true) ~= nil,
+        'kak script missing execute(KakNewWin vertical ...) form'
+      )
+      assert(
+        body:find("execute('KakNewTab", 1, true) ~= nil,
+        'kak script missing execute(KakNewTab ...) form'
+      )
+      assert(
+        body:find("execute('KakFocus'", 1, true) ~= nil,
+        'kak script missing execute(KakFocus) form'
+      )
+      -- Must use the real session value, not the non-existent
+      -- `$kak_opt_session` (which would evaluate to "" and make
+      -- KakNewWin spawn a brand-new session instead of attaching
+      -- to the current one).
+      assert(
+        body:find('$kak_session', 1, true) ~= nil,
+        'kak script does not use $kak_session: ' .. script
+      )
+      assert(
+        body:find('$kak_opt_session', 1, true) == nil,
+        'kak script still uses $kak_opt_session (typo for $kak_session)'
+      )
+      -- Must NOT use the old broken pattern (in executable code).
+      assert(
+        body:find('--remote-send', 1, true) == nil,
+        'kak script still uses --remote-send in executable code (use --remote-expr instead)'
+      )
+    end)
+
     -- Optional syntax check; skip when `kak` is not available so the
     -- suite doesn't fail in bare environments.
     it('sources and requires the nvim module cleanly under kak', function()

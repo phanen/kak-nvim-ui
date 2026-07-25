@@ -19,10 +19,14 @@
 #      `nvim-terminal-window: no such command`.
 #   3. Kakoune calls `<windowing_module>-terminal-<placement>` for
 #      `:new` (see `rc/windowing/new-client.kak`). Each command shells
-#      `nvim --server "$NVIM" --remote-send ':KakNewWin <placement>
-#      %val{session}<CR>'`, which creates a split / tab in the SAME
-#      nvim and calls `kak.ui.open()` to attach a fresh json-ui
-#      client to the current session.
+#      `nvim --server "$NVIM" --remote-expr "execute('...')"`, which
+#      is an RPC eval -- the keys NEVER go through the parent nvim's
+#      input layer, so the kak content buffer's `vim.on_key` hook
+#      (which would forward them back to kak) is bypassed. We
+#      `--remote-expr` rather than `--remote-send` for exactly this
+#      reason: every keystroke (including `:...`) is dropped by
+#      `on_key` and forwarded to the kak child, so `:KakNewWin ...`
+#      would never reach the parent nvim's command line.
 #
 # V1 LIMITATION:
 #
@@ -45,9 +49,7 @@ provide-module nvim %{
 
     # Fail loudly at module-require time if the parent nvim did not
     # export its listen socket. Commands below read $NVIM directly so
-    # they work in any buffer scope. We intentionally do NOT declare
-    # a `nvim_listen` buffer-scope option: at startup there is no
-    # buffer context yet and `set-option buffer` would error.
+    # they work in any buffer scope.
     evaluate-commands %sh{
         if [ -z "$NVIM" ]; then
             echo 'fail NVIM not set; the nvim that spawned this kak client did not export its listen socket'
@@ -67,9 +69,9 @@ The current session is reused; the new window hosts a fresh json-ui client via k
             # Drop the placeholder `kak -c <session> -e "<cmds>"` we
             # receive via `$@`; we drive the new client from nvim
             # directly. See V1 LIMITATION at top of file.
-            nvim --server "$listen" --remote-send ":KakNewWin window $kak_opt_session<CR>" \
+            nvim --server "$listen" --remote-expr "execute('KakNewWin window $kak_session')" \
                 >/dev/null 2>&1 \
-                || echo "fail %{nvim-terminal-window: nvim --remote-send exited $?}"
+                || echo "fail %{nvim-terminal-window: nvim --remote-expr exited $?}"
         }
     }
 
@@ -83,9 +85,9 @@ The current session is reused; the new window hosts a fresh json-ui client via k
                 echo 'fail %{nvim-terminal-horizontal: NVIM not set}'
                 exit 0
             fi
-            nvim --server "$listen" --remote-send ":KakNewWin horizontal $kak_opt_session<CR>" \
+            nvim --server "$listen" --remote-expr "execute('KakNewWin horizontal $kak_session')" \
                 >/dev/null 2>&1 \
-                || echo "fail %{nvim-terminal-horizontal: nvim --remote-send exited $?}"
+                || echo "fail %{nvim-terminal-horizontal: nvim --remote-expr exited $?}"
         }
     }
 
@@ -99,9 +101,9 @@ The current session is reused; the new window hosts a fresh json-ui client via k
                 echo 'fail %{nvim-terminal-vertical: NVIM not set}'
                 exit 0
             fi
-            nvim --server "$listen" --remote-send ":KakNewWin vertical $kak_opt_session<CR>" \
+            nvim --server "$listen" --remote-expr "execute('KakNewWin vertical $kak_session')" \
                 >/dev/null 2>&1 \
-                || echo "fail %{nvim-terminal-vertical: nvim --remote-send exited $?}"
+                || echo "fail %{nvim-terminal-vertical: nvim --remote-expr exited $?}"
         }
     }
 
@@ -115,9 +117,9 @@ The current session is reused; the new tab hosts a fresh json-ui client via kak-
                 echo 'fail %{nvim-terminal-tab: NVIM not set}'
                 exit 0
             fi
-            nvim --server "$listen" --remote-send ":KakNewTab $kak_opt_session<CR>" \
+            nvim --server "$listen" --remote-expr "execute('KakNewTab $kak_session')" \
                 >/dev/null 2>&1 \
-                || echo "fail %{nvim-terminal-tab: nvim --remote-send exited $?}"
+                || echo "fail %{nvim-terminal-tab: nvim --remote-expr exited $?}"
         }
     }
 
@@ -131,9 +133,9 @@ The optional <client> argument is ignored (always focuses the live session)' \
                 echo 'fail %{nvim-focus: NVIM not set}'
                 exit 0
             fi
-            nvim --server "$listen" --remote-send ':KakFocus<CR>' \
+            nvim --server "$listen" --remote-expr "execute('KakFocus')" \
                 >/dev/null 2>&1 \
-                || echo "fail %{nvim-focus: nvim --remote-send exited $?}"
+                || echo "fail %{nvim-focus: nvim --remote-expr exited $?}"
         }
     }
 
