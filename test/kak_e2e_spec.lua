@@ -11,6 +11,7 @@ describe('real Kakoune integration', function()
 
   it('renders a multi-line buffer into content + mode buffers', function()
     local file = h.write_file({ 'alpha line', 'beta line', 'gamma line' })
+    finally(function() os.remove(file) end)
 
     local result = h.with_kak_session({
       extra_args = { '-e', 'edit ' .. file },
@@ -31,7 +32,6 @@ describe('real Kakoune integration', function()
       return got
     end, file)
 
-    os.remove(file)
     eq('table', type(result))
     if type(result) == 'table' then
       eq('alpha line', result.content[1])
@@ -59,6 +59,7 @@ describe('real Kakoune integration', function()
 
     it('renders grid via screen:expect', function()
       local file = h.write_file({ 'alpha line', 'beta line', 'gamma line' })
+      finally(function() os.remove(file) end)
 
       h.with_kak_session({
         extra_args = { '-e', 'edit ' .. file },
@@ -68,8 +69,6 @@ describe('real Kakoune integration', function()
           return #lines >= 3 and lines[1] == 'alpha line'
         end)
       end, file)
-
-      os.remove(file)
 
       -- 80x24: 1 mode + 3 content + 19 empty + 1 cmdline.
       -- Cursor `^` glyph sits at column 0 of the focused row, so the
@@ -87,6 +86,7 @@ describe('real Kakoune integration', function()
 
   it('updates buffer when file changes mid-session', function()
     local file = h.write_file({ 'initial content' })
+    finally(function() os.remove(file) end)
 
     local result = h.with_kak_session({
       extra_args = { '-e', 'edit ' .. file },
@@ -103,7 +103,6 @@ describe('real Kakoune integration', function()
       return got
     end)
 
-    os.remove(file)
     eq('table', type(result))
     if type(result) == 'table' then eq('initial content', result[1]) end
   end)
@@ -114,6 +113,7 @@ describe('real Kakoune integration', function()
     local dir = h.fn.tempname()
     h.fn.mkdir(dir, 'p')
     local log = dir .. '/log.txt'
+    finally(function() h.rmdir(dir) end)
 
     local spawned = h.with_kak_session({
       cmd = { '/usr/bin/kak' },
@@ -122,7 +122,6 @@ describe('real Kakoune integration', function()
       vim.wait(3000, function() return sess.conn:is_closing() end)
       return true
     end)
-    os.execute('rm -rf ' .. dir)
 
     -- Headless nvim cannot deliver real keypresses to our handler,
     -- so unit-test the raw ESC -> <esc> translation directly. The

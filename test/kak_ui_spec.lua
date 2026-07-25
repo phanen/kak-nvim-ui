@@ -593,6 +593,7 @@ describe('end-to-end rpc over uv pipe', function()
       printf '{"jsonrpc":"2.0","method":"set_ui_options","params":[{"foo":"bar"}]}\n'
       sleep 5
     ]])
+    finally(function() os.remove(fake_path) end)
 
     local ok, recv = pcall(function()
       return h.exec_lua(function(fake)
@@ -614,7 +615,6 @@ describe('end-to-end rpc over uv pipe', function()
         return recv
       end, fake_path)
     end)
-    os.remove(fake_path)
     h.sleep(100)
     h.eq(true, ok)
     h.eq('table', type(recv))

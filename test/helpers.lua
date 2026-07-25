@@ -79,7 +79,10 @@ function M.with_kak_session(opts, body, ...)
     extra_args = {}
   end
 
-  local result = exec_lua(function(cmd, extra_args, body_src, ...)
+  -- pcall so internal cleanup runs even if body throws inside the child.
+  -- busted's `finally()` resolves via the test's _ENV, so it cannot be
+  -- used from this module-level helper.
+  local ok, result = pcall(exec_lua, function(cmd, extra_args, body_src, ...)
     local body = assert(loadstring(body_src))
     local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
     local got = body(sess, ...)
@@ -89,6 +92,7 @@ function M.with_kak_session(opts, body, ...)
 
   M.sleep(200)
   if wire_path then os.remove(wire_path) end
+  if not ok then error(result) end
   return result
 end
 
@@ -100,7 +104,10 @@ end
 --- @return any
 function M.with_fake_kak(script, body, ...)
   local fake_path = M.write_executable(script)
-  local result = exec_lua(function(fake_path, body_src, ...)
+  -- pcall so internal cleanup runs even if body throws inside the child.
+  -- busted's `finally()` resolves via the test's _ENV, so it cannot be
+  -- used from this module-level helper.
+  local ok, result = pcall(exec_lua, function(fake_path, body_src, ...)
     local body = assert(loadstring(body_src))
     local rpc = require('kak.ui.json_rpc')
     local captured = {}
@@ -119,6 +126,7 @@ function M.with_fake_kak(script, body, ...)
 
   M.sleep(200)
   os.remove(fake_path)
+  if not ok then error(result) end
   return result
 end
 
