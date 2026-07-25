@@ -6,6 +6,14 @@
 ---
 --- Lifecycle: `menu_show` / `info_show` create a window, `*_select` updates
 --- the highlighted entry, `*_hide` closes the window.
+---
+--- Per-atom faces: Kakoune's terminal UI merges each atom face with the
+--- line base (`menu_bg` / `menu_fg` for menus, the single `face` for info)
+--- via `Face::merge_faces`. The JSON UI sends raw atoms plus a separate
+--- line base, so we mirror that merge here via `faces.merge`. Without
+--- this, popup content collapses to a single colour and inline
+--- highlights (matched chars in completions, type colouring in `:%sh`
+--- output, etc.) are lost.
 
 ---@alias kak.ui.popups.MenuKind
 ---| 'float'
@@ -43,7 +51,6 @@
 ---@field win integer
 
 ---@class kak.ui.popups.InfoStateInline : kak.ui.popups.InfoStateBase
----@field kind 'inline'
 ---@field row integer
 ---@field col integer
 
@@ -65,6 +72,8 @@ local M = {}
 
 local INLINE_MAX_ITEMS = 12
 
+local faces = require('kak.ui.faces')
+
 ---@param line kak.ui.protocol.Line
 ---@return string
 local function line_to_text(line)
@@ -73,6 +82,52 @@ local function line_to_text(line)
     parts[#parts + 1] = atom.contents or ''
   end
   return table.concat(parts)
+end
+
+--- Build virt_text-style chunks where each atom gets a merged face.
+--- Empty atoms are skipped so empty padding never widens the chunk list.
+---@param line kak.ui.protocol.Line
+---@param base kak.ui.faces.Face?
+---@param cache kak.ui.faces.Cache
+---@return { [1]: string, [2]: string }[]
+local function line_to_chunks(line, base, cache)
+  local chunks = {}
+  for _, atom in ipairs(line) do
+    local text = atom.contents or ''
+    if text ~= '' then
+      local merged = faces.merge(base, atom.face)
+      chunks[#chunks + 1] = { text, cache:get(merged) }
+    end
+  end
+  return chunks
+end
+
+--- Apply per-atom extmark highlights in the float buffer at row `i`.
+--- Skips atoms that resolve to the float's winhighlight (no-op visually)
+--- but still writes the extmark so future face changes don't repaint
+--- stale regions.
+---@param buf integer
+---@param ns integer
+---@param i integer 0-based row
+---@param line kak.ui.protocol.Line
+---@param base kak.ui.faces.Face?
+---@param cache kak.ui.faces.Cache
+local function apply_atom_extmarks(buf, ns, i, line, base, cache)
+  local byte = 0
+  for _, atom in ipairs(line) do
+    local s = atom.contents or ''
+    if s ~= '' then
+      local end_byte = byte + #s
+      local merged = faces.merge(base, atom.face)
+      local hl = cache:get(merged)
+      pcall(vim.api.nvim_buf_set_extmark, buf, ns, i, byte, {
+        end_col = end_byte,
+        hl_group = hl,
+        right_gravity = false,
+      })
+      byte = end_byte
+    end
+  end
 end
 
 local Manager = {}
@@ -195,11 +250,6 @@ end
 function Manager:_show_menu_inline(items, anchor, fg, bg, style)
   local renderer = self.renderer
   if not renderer or not renderer.content_buf then return 'inline' end
-  local lines = {}
-  for _, item in ipairs(items) do
-    lines[#lines + 1] = line_to_text(item)
-  end
-  ---@cast self.menu_state -nil
   ---@type kak.ui.popups.MenuStateInline
   local inline_state = {
     kind = 'inline',
@@ -217,10 +267,11 @@ function Manager:_show_menu_inline(items, anchor, fg, bg, style)
   local row = math.max(0, math.min(anchor.line, total - 1))
   ---@cast row integer
   vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
-  local bg_hl = self.faces:get(bg)
-  for i, line in ipairs(lines) do
+  for i, item in ipairs(items) do
+    local line_base = bg
+    local chunks = line_to_chunks(item, line_base, self.faces)
     vim.api.nvim_buf_set_extmark(buf, self.float_ns, row, anchor.column or 0, {
-      virt_text = { { line, bg_hl } },
+      virt_text = chunks,
       virt_text_pos = 'eol',
       hl_mode = 'combine',
       right_gravity = false,
@@ -248,14 +299,8 @@ function Manager:menu_select(selected)
     local buf = state.buf
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
     for i, item in ipairs(state.items) do
-      local hl = (i == selected + 1) and self.faces:get(state.fg) or self.faces:get(state.bg)
-      vim.api.nvim_buf_set_extmark(
-        buf,
-        self.float_ns,
-        i - 1,
-        0,
-        { end_col = #line_to_text(item), hl_group = hl, right_gravity = false }
-      )
+      local line_base = (i == selected + 1) and state.fg or state.bg
+      apply_atom_extmarks(buf, self.float_ns, i - 1, item, line_base, self.faces)
     end
   else
     local renderer = self.renderer
@@ -267,10 +312,10 @@ function Manager:menu_select(selected)
     ---@cast row integer
     vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
     for i, item in ipairs(state.items) do
-      local line = line_to_text(item)
-      local hl = (i == selected + 1) and self.faces:get(state.fg) or self.faces:get(state.bg)
+      local line_base = (i == selected + 1) and state.fg or state.bg
+      local chunks = line_to_chunks(item, line_base, self.faces)
       vim.api.nvim_buf_set_extmark(buf, self.float_ns, row, anchor.column or 0, {
-        virt_text = { { line, hl } },
+        virt_text = chunks,
         virt_text_pos = 'eol',
         hl_mode = 'combine',
         right_gravity = false,
@@ -321,8 +366,10 @@ function Manager:_info_float(title, content, anchor, face, style)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
   local lines = { line_to_text(title) }
+  local source = { title }
   for _, line in ipairs(content) do
     lines[#lines + 1] = line_to_text(line)
+    source[#source + 1] = line
   end
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
@@ -384,6 +431,13 @@ function Manager:_info_float(title, content, anchor, face, style)
   }
   local win = vim.api.nvim_open_win(buf, style == 'modal', config)
   pcall(vim.api.nvim_set_option_value, 'winhighlight', 'Normal:' .. hl, { win = win })
+
+  -- Per-atom highlights: every atom face is merged with the info face
+  -- so colours specified inside `content` lines survive.
+  for i, line in ipairs(source) do
+    apply_atom_extmarks(buf, self.float_ns, i - 1, line, face, self.faces)
+  end
+
   self.info_state = { kind = 'float', buf = buf, win = win, style = style }
   return 'float'
 end
@@ -401,7 +455,6 @@ function Manager:_info_inline(title, content, anchor, face, style)
   local total = vim.api.nvim_buf_line_count(buf)
   local row = math.max(0, math.min(anchor.line, total - 1))
   ---@cast row integer
-  local hl = self.faces:get(face)
   vim.api.nvim_buf_clear_namespace(buf, self.float_ns, 0, -1)
   local order = style == 'inlineAbove' and -1 or 1
   ---@cast order integer
@@ -410,7 +463,7 @@ function Manager:_info_inline(title, content, anchor, face, style)
   local col = anchor.column or 0
   ---@cast col integer
   vim.api.nvim_buf_set_extmark(buf, self.float_ns, base_row, col, {
-    virt_text = { { line_to_text(title), hl } },
+    virt_text = line_to_chunks(title, face, self.faces),
     virt_text_pos = 'eol',
     hl_mode = 'combine',
     right_gravity = false,
@@ -420,7 +473,7 @@ function Manager:_info_inline(title, content, anchor, face, style)
     local r = math.max(0, math.min(base_row + i * order, total - 1))
     ---@cast r integer
     vim.api.nvim_buf_set_extmark(buf, self.float_ns, r, col, {
-      virt_text = { { line_to_text(line), hl } },
+      virt_text = line_to_chunks(line, face, self.faces),
       virt_text_pos = 'eol',
       hl_mode = 'combine',
       right_gravity = false,
@@ -445,4 +498,8 @@ function Manager:info_hide()
 end
 
 Manager._Manager = Manager
+---@type fun(line: kak.ui.protocol.Line, base: kak.ui.faces.Face?, cache: kak.ui.faces.Cache): { [1]: string, [2]: string }[]
+M._line_to_chunks = line_to_chunks
+---@type fun(buf: integer, ns: integer, i: integer, line: kak.ui.protocol.Line, base: kak.ui.faces.Face?, cache: kak.ui.faces.Cache)
+M._apply_atom_extmarks = apply_atom_extmarks
 return M

@@ -37,10 +37,9 @@
 
 local M = {}
 
-local NS = vim.api.nvim_create_namespace('kak.ui.render')
-local CONTENT_NS = NS + 1
-local CURSOR_NS = NS + 2
-local MODE_NS = NS + 3
+local CONTENT_NS = vim.api.nvim_create_namespace('kak.ui.render.content')
+local CURSOR_NS = vim.api.nvim_create_namespace('kak.ui.render.cursor')
+local MODE_NS = vim.api.nvim_create_namespace('kak.ui.render.mode')
 
 --- Convert a codepoint column to a byte offset within `line`.
 --- @param line string
@@ -70,6 +69,22 @@ local function column_to_byte(line, column)
   end
   if cp < column then return #line end
   return byte
+end
+
+--- Byte length of the UTF-8 codepoint starting at `offset`. Returns 1
+--- if `offset` is at/past EOL or points at a continuation byte (defensive).
+--- @param line string
+--- @param offset integer 0-based byte offset
+--- @return integer
+local function codepoint_width(line, offset)
+  if offset < 0 or offset >= #line then return 1 end
+  local b = string.byte(line, offset + 1)
+  if not b then return 1 end
+  if b < 0x80 then return 1 end
+  if b < 0xC0 then return 1 end
+  if b < 0xE0 then return 2 end
+  if b < 0xF0 then return 3 end
+  return 4
 end
 
 ---@param a string[]?
@@ -246,8 +261,12 @@ function Renderer:_place_cursor(buf, coord, face_for_default)
     attributes = { 'reverse' },
   }
   local hl = self.faces:get(cursor_face)
+  -- Cover the whole UTF-8 codepoint under the cursor; nvim interprets
+  -- `end_col` as byte offset, so for CJK we need 3 (or more) bytes, not 1.
+  local char_end = math.min(col + codepoint_width(line_text, col), #line_text)
+  if char_end <= col then char_end = math.min(col + 1, #line_text) end
   pcall(vim.api.nvim_buf_set_extmark, buf, CURSOR_NS, row, col, {
-    end_col = math.min(col + 1, #line_text),
+    end_col = char_end,
     hl_group = hl,
     right_gravity = false,
   })
@@ -306,6 +325,8 @@ end
 
 ---@type fun(line: string, column: integer): integer
 M.column_to_byte = column_to_byte
+---@type fun(line: string, offset: integer): integer
+M.codepoint_width = codepoint_width
 ---@type fun(a: kak.ui.faces.Face?, b: kak.ui.faces.Face?): boolean
 M.full_face_equal = full_face_equal
 ---@type fun(lines: kak.ui.protocol.Lines?): string[]

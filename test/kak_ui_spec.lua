@@ -114,6 +114,97 @@ describe('column to byte', function()
   end)
 end)
 
+describe('codepoint width', function()
+  before_each(function() end)
+
+  it('returns 1 byte for ASCII', function()
+    local r = h.exec_lua(function()
+      local m = require('kak.ui.render')
+      return { m.codepoint_width('a', 0), m.codepoint_width('hello', 2) }
+    end)
+    h.eq(1, r[1])
+    h.eq(1, r[2])
+  end)
+
+  it('returns 2 bytes for Latin-1 supplementary', function()
+    local r = h.exec_lua(
+      function() return require('kak.ui.render').codepoint_width('héllo', 1) end
+    )
+    h.eq(2, r)
+  end)
+
+  it('returns 3 bytes for CJK', function()
+    local r = h.exec_lua(function()
+      local m = require('kak.ui.render')
+      return { m.codepoint_width('中文', 0), m.codepoint_width('中文', 3) }
+    end)
+    h.eq(3, r[1])
+    h.eq(3, r[2])
+  end)
+
+  it('returns 1 for past end-of-line', function()
+    local r = h.exec_lua(function()
+      local m = require('kak.ui.render')
+      return { m.codepoint_width('', 0), m.codepoint_width('a', 5), m.codepoint_width('a', -1) }
+    end)
+    h.eq(1, r[1])
+    h.eq(1, r[2])
+    h.eq(1, r[3])
+  end)
+end)
+
+describe('cursor extmark visual width', function()
+  before_each(function() h.setup() end)
+
+  it('covers 1 byte under ASCII cursor', function()
+    local r = h.exec_lua(function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'abc' })
+      vim.bo[buf].modifiable = false
+      local render = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      render:set_buf(buf)
+      render:draw({
+        { { face = nil, contents = 'abc' } },
+      }, { line = 0, column = 1 }, nil, nil)
+      -- ns = -1 returns extmarks from every namespace.
+      local marks = vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })
+      local cursor = nil
+      for _, m in ipairs(marks) do
+        local hl = m[4] and m[4].hl_group
+        if hl and hl:match('^KakFace_') then cursor = m end
+      end
+      return { count = cursor and 1 or 0, end_col = cursor and cursor[4].end_col or -1 }
+    end)
+    h.eq(1, r.count)
+    h.eq(2, r.end_col)
+  end)
+
+  it('covers 3 bytes under CJK cursor', function()
+    local r = h.exec_lua(function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '中文' })
+      vim.bo[buf].modifiable = false
+      local render = require('kak.ui.render').new({ faces = require('kak.ui.faces').new() })
+      render:set_buf(buf)
+      -- column 0 = before the first char, so cursor covers bytes 0..3.
+      render:draw({
+        { { face = nil, contents = '中文' } },
+      }, { line = 0, column = 0 }, nil, nil)
+      local marks = vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })
+      local cursor = nil
+      for _, m in ipairs(marks) do
+        local hl = m[4] and m[4].hl_group
+        if hl and hl:match('^KakFace_') then cursor = m end
+      end
+      return { count = cursor and 1 or 0, end_col = cursor and cursor[4].end_col or -1 }
+    end)
+    h.eq(1, r.count)
+    h.eq(3, r.end_col)
+  end)
+end)
+
 describe('face cache', function()
   before_each(function() end)
 
@@ -172,6 +263,197 @@ describe('face cache', function()
     h.eq(true, v.underline)
     h.eq(true, v.italic)
     h.eq(true, v.reverse)
+  end)
+end)
+
+describe('faces.merge', function()
+  before_each(function() end)
+
+  it('returns face when base is nil', function()
+    local r = h.exec_lua(
+      function() return require('kak.ui.faces').merge(nil, { fg = 'red', attributes = { 'bold' } }) end
+    )
+    h.eq('red', r.fg)
+  end)
+
+  it('returns base when face is nil', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge({ bg = 'blue', attributes = { 'reverse' } }, nil)
+      end
+    )
+    h.eq('blue', r.bg)
+    h.eq(1, #r.attributes)
+    h.eq('reverse', r.attributes[1])
+  end)
+
+  it('lets face override base colors when face is not default', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { fg = 'red', bg = 'blue' },
+          { fg = 'green', bg = 'default' }
+        )
+      end
+    )
+    h.eq('green', r.fg)
+    h.eq('blue', r.bg)
+  end)
+
+  it('keeps base colors when face is default', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { fg = 'red', bg = 'blue' },
+          { fg = nil, bg = nil, attributes = { 'bold' } }
+        )
+      end
+    )
+    h.eq('red', r.fg)
+    h.eq('blue', r.bg)
+  end)
+
+  it('unions attributes by default', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { attributes = { 'bold' } },
+          { attributes = { 'italic' } }
+        )
+      end
+    )
+    -- union sorted
+    h.eq('bold', r.attributes[1])
+    h.eq('italic', r.attributes[2])
+  end)
+
+  it('respects base final_fg', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { fg = 'red', attributes = { 'final_fg' } },
+          { fg = 'green', attributes = {} }
+        )
+      end
+    )
+    h.eq('red', r.fg)
+  end)
+
+  it('respects face final_fg (overrides base final)', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { fg = 'red', attributes = { 'final_fg' } },
+          { fg = 'green', attributes = { 'final_fg' } }
+        )
+      end
+    )
+    h.eq('green', r.fg)
+  end)
+
+  it('drops face attrs when base has final_attr', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { attributes = { 'final_attr', 'bold' } },
+          { attributes = { 'italic' } }
+        )
+      end
+    )
+    -- face attrs (italic) dropped, base attrs preserved in original order
+    h.eq(2, #r.attributes)
+    h.eq('final_attr', r.attributes[1])
+    h.eq('bold', r.attributes[2])
+  end)
+
+  it('preserves base final_* when face has final_attr', function()
+    local r = h.exec_lua(
+      function()
+        return require('kak.ui.faces').merge(
+          { fg = 'red', attributes = { 'final_fg' } },
+          { bg = 'green', attributes = { 'final_attr', 'italic' } }
+        )
+      end
+    )
+    -- face attrs win, base final_fg preserved
+    h.eq('green', r.bg)
+    h.eq(3, #r.attributes)
+    assert(r.attributes[1] == 'final_attr', 'attr[1]=' .. tostring(r.attributes[1]))
+    assert(r.attributes[2] == 'final_fg', 'attr[2]=' .. tostring(r.attributes[2]))
+    assert(r.attributes[3] == 'italic', 'attr[3]=' .. tostring(r.attributes[3]))
+  end)
+end)
+
+describe('popups per-atom highlighting', function()
+  before_each(function() h.setup() end)
+
+  it('builds chunks per atom merged with base face', function()
+    local r = h.exec_lua(function()
+      local faces = require('kak.ui.faces').new()
+      local popups = require('kak.ui.popups')
+      local line = {
+        { face = { fg = 'red', bg = nil, underline = nil, attributes = {} }, contents = 'foo' },
+        {
+          face = { fg = 'blue', bg = nil, underline = nil, attributes = { 'bold' } },
+          contents = 'bar',
+        },
+      }
+      local chunks = popups._line_to_chunks(line, { bg = 'default' }, faces)
+      return {
+        count = #chunks,
+        text1 = chunks[1][1],
+        text2 = chunks[2][1],
+        same_hl = chunks[1][2] == chunks[2][2],
+      }
+    end)
+    h.eq(2, r.count)
+    h.eq('foo', r.text1)
+    h.eq('bar', r.text2)
+    h.eq(false, r.same_hl)
+  end)
+
+  it('skips empty atoms in chunks', function()
+    local r = h.exec_lua(function()
+      local faces = require('kak.ui.faces').new()
+      local popups = require('kak.ui.popups')
+      local chunks = popups._line_to_chunks({
+        { face = nil, contents = '' },
+        { face = nil, contents = 'x' },
+      }, nil, faces)
+      return #chunks
+    end)
+    h.eq(1, r)
+  end)
+
+  it('applies extmarks for each atom byte range', function()
+    local r = h.exec_lua(function()
+      local faces = require('kak.ui.faces').new()
+      local popups = require('kak.ui.popups')
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'foobaz' })
+      vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
+      local ns = vim.api.nvim_create_namespace('kak-test')
+      popups._apply_atom_extmarks(buf, ns, 0, {
+        { face = { fg = 'red', attributes = {} }, contents = 'foo' },
+        { face = { fg = 'blue', attributes = { 'bold' } }, contents = 'baz' },
+      }, nil, faces)
+      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      table.sort(marks, function(a, b) return a[2] < b[2] end)
+      -- mark tuple: {id, row, col, details}; details holds end_col / hl_group.
+      return {
+        count = #marks,
+        end1 = marks[1][4].end_col,
+        end2 = marks[2][4].end_col,
+        hl1 = marks[1][4].hl_group,
+        hl2 = marks[2][4].hl_group,
+        same = marks[1][4].hl_group == marks[2][4].hl_group,
+      }
+    end)
+    h.eq(2, r.count)
+    h.eq(3, r.end1)
+    h.eq(6, r.end2)
+    h.eq(false, r.same)
   end)
 end)
 
