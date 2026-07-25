@@ -232,6 +232,11 @@ function Handler:enable(buf)
       local ok, err = pcall(handler.rpc.notify, handler.rpc, 'keys', keys)
       if not ok then io.stderr:write('[kak.ui] keys notify error: ' .. tostring(err) .. '\n') end
     end
+    -- Returning '' tells nvim to drop the key (per |vim.on_key()|).
+    -- Without this, nvim would ALSO act on ESC, `:`, `/`, etc.,
+    -- causing double behavior (e.g. nvim's `<Esc>` clearing search
+    -- highlight in addition to our forwarding to kakoune).
+    return ''
   end
   vim.on_key(self.on_key_fn, self.on_key_ns)
 

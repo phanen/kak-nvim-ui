@@ -74,21 +74,43 @@ function Manager:_show_menu_float(items, anchor, fg, bg, style)
   vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 
   local bg_hl = self.faces:get(bg)
+  local editor_w = vim.o.columns or 120
+  local editor_h = vim.o.lines or 40
   local width = 0
   for _, l in ipairs(lines) do
     if #l > width then width = #l end
   end
   local win_h = math.min(#lines, 20)
-  local total = vim.api.nvim_buf_line_count(self.renderer.content_buf)
-  local row = math.max(0, math.min(anchor.line, total - 1))
-  local row_offset = style == 'search' and 1 or 0
+
+  -- Per-style placement mirroring kakoune's terminal UI:
+  --   * prompt -> sits at the prompt row (bottom), full width aligned
+  --   * search -> just below the matched row (anchor + 1)
+  --   * inline -> never floats (handled by _show_menu_inline)
+  local win_anchor, row, col
+  if style == 'prompt' then
+    -- Anchor bottom of menu at the bottom of the editor. The float
+    -- grows upward automatically thanks to the SW anchor.
+    win_anchor = 'SW'
+    row = editor_h
+    col = math.max(0, math.floor(editor_w / 2))
+  else
+    -- search / inline -> NW anchor just below the matched line.
+    win_anchor = 'NW'
+    local total = vim.api.nvim_buf_line_count(self.renderer.content_buf)
+    local base = math.max(0, math.min(anchor.line, total - 1))
+    local row_offset = style == 'search' and 1 or 0
+    row = math.max(0, math.min(base + 1 + row_offset, editor_h - win_h - 2))
+    col = 0
+  end
+
   local config = {
     relative = 'editor',
+    anchor = win_anchor,
     style = 'minimal',
     width = math.max(width + 2, 4),
     height = win_h,
-    row = row + 1 + row_offset,
-    col = 0,
+    row = row,
+    col = col,
     border = 'single',
     focusable = false,
     noautocmd = true,
@@ -103,6 +125,8 @@ function Manager:_show_menu_float(items, anchor, fg, bg, style)
     items = items,
     fg = fg,
     bg = bg,
+    style = style,
+    anchor = anchor,
     selected = -1,
   }
   return 'float'
@@ -234,21 +258,60 @@ function Manager:_info_float(title, content, anchor, face, style)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
 
+  local editor_w = vim.o.columns or 120
+  local editor_h = vim.o.lines or 40
+  local maxw = 0
+  for _, l in ipairs(lines) do
+    local n = vim.fn.strdisplaywidth(l)
+    if n > maxw then maxw = n end
+  end
+  local width = math.min(maxw + 2, math.max(20, math.floor(editor_w / 2)))
+  local height = math.min(#lines, math.max(5, math.floor(editor_h / 3)))
+
+  -- Use nvim_open_win's `anchor` corner semantics instead of manual
+  -- subtract-from-screen math. See |nvim_open_win()| anchor key.
+  local win_anchor, row, col
+  if style == 'modal' then
+    -- Centered on screen. Default NW anchor, position the top-left at
+    -- the natural center.
+    win_anchor = 'NW'
+    row = math.max(0, math.floor((editor_h - height) / 2) - 1)
+    col = math.max(0, math.floor((editor_w - width) / 2))
+  elseif style == 'menuDoc' then
+    -- Which-key-style doc: anchor top-right corner at the right side
+    -- of the editor, just below the menu row.
+    local total = (self.renderer and self.renderer.content_buf)
+        and vim.api.nvim_buf_line_count(self.renderer.content_buf)
+      or editor_h
+    local menu_row = anchor and anchor.line or 0
+    local base = math.max(0, math.min(menu_row, total - 1))
+    win_anchor = 'NE'
+    row = math.min(base + 1, editor_h - height - 2)
+    col = editor_w
+  else
+    -- 'prompt' style (and any unknown float style): anchor bottom of
+    -- float to the bottom of the editor.
+    win_anchor = 'SW'
+    row = editor_h
+    col = math.max(0, math.floor(editor_w / 2))
+  end
+
   local hl = self.faces:get(face)
   local config = {
     relative = 'editor',
+    anchor = win_anchor,
     style = 'minimal',
-    width = 80,
-    height = math.min(#lines, 20),
-    row = style == 'modal' and 5 or (style == 'menuDoc' and 1 or 30),
-    col = style == 'menuDoc' and 80 or 10,
+    width = width,
+    height = height,
+    row = row,
+    col = col,
     border = 'single',
     focusable = style == 'modal',
     noautocmd = true,
   }
   local win = vim.api.nvim_open_win(buf, style == 'modal', config)
   pcall(vim.api.nvim_set_option_value, 'winhighlight', 'Normal:' .. hl, { win = win })
-  self.info_state = { kind = 'float', buf = buf, win = win }
+  self.info_state = { kind = 'float', buf = buf, win = win, style = style }
   return 'float'
 end
 
