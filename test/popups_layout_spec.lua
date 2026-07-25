@@ -15,6 +15,22 @@ end
 describe('popups layout', function()
   before_each(function() h.setup() end)
 
+  it('choose_float_or_inline routes search->inline and everything else->float', function()
+    local r = with_screen([[
+      local layout = require('kak.ui.popups.layout')
+      return {
+        search = layout.choose_float_or_inline('search', 5),
+        prompt = layout.choose_float_or_inline('prompt', 5),
+        inline = layout.choose_float_or_inline('inline', 5),
+        long   = layout.choose_float_or_inline('inline', 999),
+      }
+    ]])
+    h.eq('inline', r.search)
+    h.eq('float', r.prompt)
+    h.eq('float', r.inline)
+    h.eq('float', r.long)
+  end)
+
   it('menu_pos style=prompt uses NW anchor with row=editor_h-h, col=0', function()
     local geom = with_screen([[
       local layout = require('kak.ui.popups.layout')

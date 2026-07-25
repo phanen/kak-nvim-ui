@@ -23,7 +23,6 @@
 
 local M = {}
 
-local INLINE_MAX_ITEMS = 12
 local MENU_MAX_HEIGHT = 20
 local INFO_MAX_HEIGHT_FLOOR = 5
 local INFO_MAX_WIDTH_FLOOR = 20
@@ -54,14 +53,16 @@ local INFO_ANCHORS = {
   menuDoc = { win_anchor = 'NW', point = 'editor_right' },
 }
 
+--- Route a Kakoune menu style to the rendering path Kakoune uses:
+--- `search` is a single-row horizontal menu rendered inline as virt_text;
+--- every other style is rendered as a 1-column vertical float
+--- (borderless, mirroring Kakoune's `terminal_ui.cc` `columns = 1`).
 ---@param style kak.ui.protocol.MenuStyle
----@param item_count integer
+---@param _item_count integer
 ---@return kak.ui.popups.layout.MenuKind
-function M.choose_float_or_inline(style, item_count)
+function M.choose_float_or_inline(style, _item_count)
   if style == 'search' then return 'inline' end
-  if style == 'prompt' then return 'float' end
-  if item_count > INLINE_MAX_ITEMS then return 'float' end
-  return 'inline'
+  return 'float'
 end
 
 ---@param items kak.ui.protocol.Lines
