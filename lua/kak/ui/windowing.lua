@@ -149,6 +149,21 @@ function M.inject_args(opts)
   return opts
 end
 
+--- Map a kakoune windowing placement to an nvim split command.
+--- Mirrors the `rc/windowing/detection.kak` contract:
+---   horizontal = left-right side-by-side
+---   vertical   = top-bottom stacked
+---   window     = new OS window (nvim analog: a left-right split, so
+---                 `:new` defaults to side-by-side as users expect)
+---   tab        = new tabpage
+---@param placement string?
+---@return string
+function M.split_for(placement)
+  if placement == 'vertical' then return 'belowright split' end
+  if placement == 'tab' then return 'tabnew' end
+  return 'belowright vsplit'
+end
+
 --- Focus the content window of the active session (no-op if no
 --- session is open). Used by the `nvim-focus` kak command.
 function M.focus_active()

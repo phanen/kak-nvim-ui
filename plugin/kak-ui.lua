@@ -51,26 +51,16 @@ end, { nargs = '?', desc = 'Close the active Kakoune UI session.' })
 
 -- Bridge for the `nvim` kak windowing module. When Kakoune calls
 -- `:new` / `:tabnew` / `focus`, the bundled `kak/nvim.kak` shells
--- `nvim --server <listen> --remote-send ':KakNewWin ...'` (see
+-- `nvim --server <listen> --remote-expr "execute('KakNewWin ...')"` (see
 -- `lua/kak/ui/windowing.lua`). The commands below do the nvim-side
 -- half: open a split / tab and call `kak.ui.open()` to spawn a new
--- json-ui client against the same session.
+-- json-ui client against the same session. `--remote-expr` is required:
+-- `--remote-send` keys are dropped by the kak content buffer's
+-- `vim.on_key` hook and never reach the parent nvim command line.
 vim.api.nvim_create_user_command('KakNewWin', function(opts)
   local placement = opts.fargs[1]
   local session = opts.fargs[2]
-  -- The split direction is intentionally naive for now (phase 2 will
-  -- revisit). Today every placement opens a horizontal `belowright
-  -- split` so the user gets a fresh window focused underneath the
-  -- current one.
-  local split_cmd
-  if placement == 'vertical' then
-    split_cmd = 'vsplit'
-  elseif placement == 'horizontal' then
-    split_cmd = 'split'
-  else
-    split_cmd = 'split'
-  end
-  vim.cmd('belowright ' .. split_cmd)
+  vim.cmd(require('kak.ui.windowing').split_for(placement))
   require('kak.ui').open({ session = session })
 end, {
   nargs = '+',

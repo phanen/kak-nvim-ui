@@ -310,4 +310,27 @@ describe('kak.ui.windowing', function()
       assert(not err:find('fail', 1, true), 'kak emitted a fail message:\n' .. err)
     end)
   end)
+
+  describe('split_for', function()
+    it('maps placements to the kakoune detection.kak contract', function()
+      local m = h.exec_lua(function()
+        local w = require('kak.ui.windowing')
+        return {
+          horizontal = w.split_for('horizontal'),
+          vertical = w.split_for('vertical'),
+          window = w.split_for('window'),
+          tab = w.split_for('tab'),
+          default = w.split_for(nil),
+        }
+      end)
+      -- horizontal = left-right side-by-side (vsplit)
+      h.eq('belowright vsplit', m.horizontal)
+      -- vertical = top-bottom stacked (split)
+      h.eq('belowright split', m.vertical)
+      -- window (:new default) = left-right, matching user expectation
+      h.eq('belowright vsplit', m.window)
+      h.eq('belowright vsplit', m.default)
+      h.eq('tabnew', m.tab)
+    end)
+  end)
 end)
