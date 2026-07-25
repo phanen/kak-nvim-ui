@@ -11,8 +11,7 @@
 
 local M = {}
 
-local uv = vim.uv or vim.loop
-if not uv then error('kak.ui.json_rpc requires vim.uv (nvim 0.5+)') end
+if not vim.system then error('kak.ui.json_rpc requires vim.system (nvim 0.10+)') end
 
 local json_encode = vim.json.encode
 local json_decode = vim.json.decode
@@ -55,80 +54,76 @@ end
 
 --- @class kak.ui.json_rpc.Transport
 --- @field closing boolean
---- @field stdin uv.uv_pipe_t
---- @field stdout uv.uv_pipe_t
---- @field stderr uv..uv_pipe_t|nil
---- @field process uv.uv_process_t|nil
+--- @field cmd string[]
+--- @field extra? { cwd?: string, env?: table<string,string> }
+--- @field sysobj? vim.SystemObj
+--- @field on_data fun(err: any, data: string?)
+--- @field on_exit_cb fun(code: integer, signal: integer)
+--- @field on_stderr fun(err: any, data: string?)
 local Transport = {}
 Transport.__index = Transport
 
 function Transport:listen(on_data, on_exit)
   self.on_data = schedule_wrap(on_data)
   self.on_exit_cb = schedule_fn(on_exit)
-  self.stdout:read_start(self.on_data)
+  self.on_stderr = function(_, chunk)
+    if chunk then log.error('rpc.stderr', self.cmd[1], chunk) end
+  end
+
+  local spawn_opts = {
+    stdin = true,
+    stdout = self.on_data,
+    stderr = self.on_stderr,
+  }
+  if self.extra then
+    if self.extra.cwd then spawn_opts.cwd = self.extra.cwd end
+    if self.extra.env then spawn_opts.env = self.extra.env end
+  end
+
+  local ok, sysobj_or_err = pcall(vim.system, self.cmd, spawn_opts, function(obj)
+    log.info('subprocess exit', { code = obj.code, signal = obj.signal })
+    if self.on_exit_cb then self.on_exit_cb(obj.code, obj.signal) end
+  end)
+
+  if not ok then
+    ---@cast sysobj_or_err string
+    local err = sysobj_or_err
+    local sfx = err:match('ENOENT')
+        and '. The command is either not installed, missing from PATH, or not executable.'
+      or string.format(' with error message: %s', err)
+    error(('Spawning process with cmd: `%s` failed%s'):format(vim.inspect(self.cmd), sfx))
+  end
+  ---@cast sysobj_or_err vim.SystemObj
+  self.sysobj = sysobj_or_err
 end
 
 function Transport:write(s)
   if self.closing then return false end
-  if self.stdin and not self.stdin:is_closing() then
-    self.stdin:write(s)
+  if self.sysobj and not self.sysobj:is_closing() then
+    self.sysobj:write(s)
     return true
   end
   return false
 end
 
-function Transport:is_closing() return self.closing end
+function Transport:is_closing()
+  if self.closing then return true end
+  return self.sysobj ~= nil and self.sysobj:is_closing()
+end
 
 function Transport:terminate()
   if self.closing then return end
   self.closing = true
-  if self.stdout and not self.stdout:is_closing() then
-    pcall(function() self.stdout:read_stop() end)
-    pcall(function() self.stdout:close() end)
+  if self.sysobj and not self.sysobj:is_closing() then
+    pcall(function() self.sysobj:kill(15) end)
   end
-  if self.stdin and not self.stdin:is_closing() then
-    pcall(function() self.stdin:shutdown() end)
-    pcall(function() self.stdin:close() end)
-  end
-  if self.process and not self.process:is_closing() then
-    pcall(function() self.process:kill('sigterm') end)
-  end
-  if self.stderr and not self.stderr:is_closing() then
-    pcall(function() self.stderr:read_stop() end)
-    pcall(function() self.stderr:close() end)
-  end
-  if self.on_exit_cb then self.on_exit_cb(0, 0) end
 end
 
 function Transport.spawn(cmd, extra)
-  local stdin = uv.new_pipe(false)
-  local stdout = uv.new_pipe(false)
-  local stderr = uv.new_pipe(false)
-  local spawn_opts = {
-    args = cmd,
-    stdio = { stdin, stdout, stderr },
-  }
-  if extra then
-    if extra.cwd then spawn_opts.cwd = extra.cwd end
-    if extra.env then spawn_opts.env = extra.env end
-  end
-  local handle, pid_or_err = uv.spawn(cmd[1], spawn_opts, function(code, signal)
-    log.info('subprocess exit', { code = code, signal = signal })
-    if stdout and not stdout:is_closing() then pcall(function() stdout:read_stop() end) end
-  end)
-  if not handle then
-    pcall(function() stdin:close() end)
-    pcall(function() stdout:close() end)
-    pcall(function() stderr:close() end)
-    error('uv.spawn failed: ' .. tostring(pid_or_err))
-  end
   return setmetatable({
     closing = false,
-    stdin = stdin,
-    stdout = stdout,
-    stderr = stderr,
-    process = handle,
-    pid = pid_or_err,
+    cmd = cmd,
+    extra = extra,
   }, Transport)
 end
 
