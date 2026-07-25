@@ -264,7 +264,15 @@ function Connection.new(transport, dispatchers)
       function(line) self:_dispatch_raw(line) end
     )
   end, function(code, signal)
-    if self.closed then return end
+    -- Do NOT early-return on `self.closed`: the on_data EOF path
+    -- (data == nil) sets `self.closed = true` BEFORE the vim.system
+    -- on_exit callback fires (neovim #33627: on_exit waits for stdout
+    -- EOF), so guarding here would swallow the only chance to run
+    -- `dispatchers.on_exit` -> `close_session`, leaving the dead
+    -- window on screen until the user types a "dummy" key that trips
+    -- the on_key safety net. `close_session` is idempotent (Session:close
+    -- re-enters under its own `closed` guard), so a second dispatch
+    -- from an explicit :KakClose -> terminate -> process-exit is safe.
     self.closed = true
     pcall(self.dispatchers.on_exit, code, signal)
   end)
