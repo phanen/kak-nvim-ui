@@ -139,11 +139,6 @@ Transport.__index = Transport
 function Transport:listen(on_data, on_exit)
   self.on_data = schedule_wrap(on_data)
   self.on_exit_cb = schedule_fn(on_exit)
-  -- Subprocess stderr is captured into the plugin logger so it
-  -- travels through the same file sink as every other event
-  -- (json rpc frames, decode errors, exit codes). Tests point
-  -- `KAK_UI_LOG_FILE` at a per-test path and assert_log over the
-  -- combined stream.
   self.on_stderr = function(_, chunk)
     if chunk then log.error('rpc.stderr', self.cmd[1], chunk) end
   end

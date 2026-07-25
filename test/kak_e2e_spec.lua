@@ -1,7 +1,3 @@
--- End-to-end kak tests: real `kak -ui json`, fake-kak shell scripts,
--- and input handler routing. Spawn-related boilerplate lives in
--- `test.helpers.{with_kak_session,with_fake_kak_server}`.
-
 local h = require('test.helpers')
 local exec_lua = h.exec_lua
 local eq = h.eq
@@ -20,7 +16,6 @@ describe('real Kakoune integration', function()
       vim.wait(3000, function()
         local lines = vim.api.nvim_buf_get_lines(sess.buf, 0, -1, false)
         if not (#lines >= 3 and lines[1] == 'alpha line') then return false end
-        -- Mode line arrives a tick after content draw; poll until set.
         local mode = vim.api.nvim_buf_get_lines(sess.renderer.mode_buf, 0, -1, false)
         local basename = vim.fn.fnamemodify(f, ':t')
         if #mode > 0 and mode[1]:find(basename, 1, true) then
@@ -44,12 +39,9 @@ describe('real Kakoune integration', function()
   end)
 
   describe('with screen attached', function()
-    -- A separate describe so only this case pays the Screen attach cost.
     local screen
 
-    before_each(function()
-      screen = h.with_screen(80, 24)
-    end)
+    before_each(function() screen = h.with_screen(80, 24) end)
     after_each(function()
       if screen then
         screen:detach()
@@ -70,9 +62,9 @@ describe('real Kakoune integration', function()
         end)
       end, file)
 
-      -- 80x24: 1 mode + 3 content + 19 empty + 1 cmdline.
-      -- Cursor `^` glyph sits at column 0 of the focused row, so the
-      -- alpha row actually begins with `^`, not the alpha text.
+      -- 80x24: 1 mode + 3 content + 19 empty + 1 cmdline; cursor
+      -- glyph `^` sits at column 0 of the focused row, so the alpha
+      -- row begins with `^`, not the alpha text.
       screen:expect([[
         {MATCH:^.*k//main.*X}|
         {MATCH:alpha line}
@@ -108,8 +100,6 @@ describe('real Kakoune integration', function()
   end)
 
   it('forwards ESC key to kakoune, exiting insert-like mode', function()
-    -- The plugin logger routes stderr + json-rpc events to wire_log
-    -- when the env override is set; assert_log proves spawn settled.
     local dir = h.fn.tempname()
     h.fn.mkdir(dir, 'p')
     local log = dir .. '/kak-ui.log'
@@ -125,9 +115,9 @@ describe('real Kakoune integration', function()
 
     h.assert_log('subprocess exit', log)
 
-    -- Headless nvim cannot deliver real keypresses to our handler,
-    -- so unit-test the raw ESC -> <esc> translation directly. The
-    -- end-to-end run above must at least have completed spawn.
+    -- Headless nvim cannot deliver real keypresses; unit-test the
+    -- raw ESC -> <esc> translation directly. The e2e run above
+    -- must at least have completed spawn.
     local notation_ok = exec_lua(function()
       local m = require('kak.ui.input')
       local raw = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
@@ -143,10 +133,6 @@ describe('input handler routing', function()
   before_each(function() h.setup() end)
 
   it('maps mouse events to mouse_press / scroll (not keys)', function()
-    -- Fake server emits set_ui_options so spawn settles, then sends
-    -- the three mouse notifications. They must reach the rpc
-    -- dispatcher verbatim and never leak into the `keys` path
-    -- (input handler must not call conn:notify('keys', ...) for them).
     local methods = h.with_fake_kak_server(
       [[
       fake.notify('set_ui_options', {{}})
@@ -193,9 +179,7 @@ describe('input handler routing', function()
   end)
 
   it('returns empty string from on_key callback so nvim drops the key', function()
-    -- Per |vim.on_key()|: returning '' from the callback tells nvim to
-    -- discard that keypress. Without this, nvim would also act on
-    -- ESC (clear search), `:` (open cmdline), `/` (start search), etc.
+    -- |vim.on_key()|: returning '' tells nvim to discard the keypress.
     local got = exec_lua(function()
       local sent = {}
       local conn = {}
@@ -222,8 +206,6 @@ describe('plugin logger routing', function()
   before_each(function() h.setup() end)
 
   it('captures rpc stderr through the plugin logger', function()
-    -- Fake process writes to stderr, which goes through
-    -- json_rpc.lua:on_stderr -> log.error -> the env-overridden file.
     local dir = h.fn.tempname()
     h.fn.mkdir(dir, 'p')
     local log = dir .. '/kak-ui.log'
@@ -244,8 +226,8 @@ describe('plugin logger routing', function()
       end
     )
 
-    -- The same file holds both the plugin logger output and the
-    -- fake process's wire capture. Either side or both could match.
+    -- Both the plugin logger and the fake process's wire capture
+    -- share this file; either side or both could match.
     h.assert_log('rpc.stderr', log)
     h.assert_log('FAKE%-STDERR%-MARKER', log)
   end)

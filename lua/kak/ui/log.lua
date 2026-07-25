@@ -1,17 +1,7 @@
 ---
---- Plugin logger singleton. Built on top of `vim.log` (Neovim 0.10+)
---- when available; otherwise falls back to a direct `io.open` file
---- sink so production logging is always file-backed.
----
---- Two environment variables steer the singleton at construction time
---- (read once per process, when the module is first required):
----
----   KAK_UI_LOG_FILE  - override the destination log file path
----   KAK_UI_LOG_LEVEL - one of TRACE/DEBUG/INFO/WARN/ERROR/OFF
----
---- Test helpers use these to point a child nvim's logger at a
---- per-test wire log so tests can `assert_log(pattern)` against the
---- file instead of wrapping the child in a shell tee.
+--- File-backed plugin logger. Env vars read at module load:
+---   KAK_UI_LOG_FILE  - override destination
+---   KAK_UI_LOG_LEVEL - TRACE/DEBUG/INFO/WARN/ERROR/OFF
 ---
 
 ---@class kak.ui.log.Logger : vim.Log
@@ -44,10 +34,6 @@ local function ensure_parent_dir(path)
   if dir and dir ~= '' and dir ~= '.' then vim.fn.mkdir(dir, 'p') end
 end
 
---- Resolve the log file path. `KAK_UI_LOG_FILE` overrides everything
---- else; otherwise we use `stdpath('log')/<name>.log` when vim.log
---- is available. Returns nil when no override and no vim.log (the
---- fallback will pick a tmp file).
 ---@param name string
 ---@return string?
 local function resolve_log_path(name)
@@ -59,7 +45,6 @@ local function resolve_log_path(name)
   return nil
 end
 
---- Resolve the log level. `KAK_UI_LOG_LEVEL` env override, else WARN.
 ---@return integer
 local function resolve_level()
   local raw = os.getenv('KAK_UI_LOG_LEVEL')
@@ -76,9 +61,8 @@ local function make_logger()
 
   if has_real_log() then
     local real = vim.log.new({ name = 'kak-ui', level = threshold })
-    -- vim.log.new hard-codes `stdpath('log')/<name>.log`; reroute to
-    -- the env override if requested by clearing the cached file handle
-    -- so the next write opens the new path.
+    -- vim.log.new hard-codes stdpath('log')/<name>.log; reroute by
+    -- clearing the cached handle so the next write opens the new path.
     if path and real.filename ~= path then
       real.filename = path
       real.logfile = nil
@@ -89,8 +73,7 @@ local function make_logger()
     return real
   end
 
-  -- Legacy nvim without vim.log.new: file sink via raw io.open. Keep
-  -- the file handle open for the process lifetime; flush per write.
+  -- Legacy: raw io.open sink. Handle stays open; flush per write.
   if not path then path = vim.fn.tempname() .. '-kak-ui.log' end
   ensure_parent_dir(path)
   local fh = assert(io.open(path, 'a'))
