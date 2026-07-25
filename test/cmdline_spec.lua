@@ -40,10 +40,9 @@ describe('cmdline float', function()
       local content_win = surface and surface.content_win
 
       return {
-        have_float = status_win ~= nil
-          and status_buf ~= nil
-          and vim.api.nvim_win_is_valid(status_win)
-          and vim.api.nvim_buf_is_valid(status_buf),
+        have_float = status_win ~= nil and status_buf ~= nil and vim.api.nvim_win_is_valid(
+          status_win
+        ) and vim.api.nvim_buf_is_valid(status_buf),
         status_buf_lines = (status_buf and vim.api.nvim_buf_is_valid(status_buf))
             and vim.api.nvim_buf_get_lines(status_buf, 0, -1, false)
           or {},
