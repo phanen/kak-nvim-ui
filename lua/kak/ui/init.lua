@@ -44,6 +44,22 @@ local M = {}
 ---@type table<integer, kak.ui.Session>
 local SESSIONS = {}
 
+--- Daemon processes, keyed by kakoune session name. One daemon per
+--- unique `<session>` argument; closing the last client for a given
+--- session kills its daemon. The tracked value is the `vim.SystemObj`
+--- returned by `vim.system` when we spawned `kak -d -s <name>` --
+--- either the daemon itself (when we just created it) or a thin
+--- `kak -d` client process that connected to an existing daemon
+--- (when the session name was already in use).
+---@type table<string, vim.SystemObj>
+local DAEMONS = {}
+
+--- Monotonically increasing counter for `gen_session`. Avoids the
+--- same-second collision window when `vim.fn.getpid()` would otherwise
+--- be the only differentiator.
+---@type integer
+local SEQ = 0
+
 --- The most recently focused session; updates from the WinEnter
 --- autocmd installed in `open()` and from `:KakNewWin`.
 ---@type kak.ui.Session?
@@ -74,12 +90,94 @@ function M._iter()
   return it
 end
 
+--- Snapshot of the DAEMONS table for tests.
+---@return table<string, vim.SystemObj>
+function M._daemons() return DAEMONS end
+
+--- Generate a unique kakoune session name for `:Kak` calls that do
+--- not pass `--session=<name>`. Combining pid + monotonic counter
+--- guarantees uniqueness across rapid successive `:Kak` invocations
+--- in a single nvim (same second, same pid -> counter differentiates).
+---@return string
+function M._gen_session()
+  SEQ = SEQ + 1
+  return string.format('kak-nvim-%d-%d', vim.fn.getpid(), SEQ)
+end
+
+--- Build the kakoune startup preamble for the daemon / client: source
+--- the nvim windowing module so `:new`, `:tabnew`, `focus` inside
+--- this session shell back into the parent nvim.
+---@return string
+local function daemon_preamble()
+  return 'source '
+    .. require('kak.ui.windowing').kak_script_path()
+    .. '; require-module nvim; set global windowing_module nvim'
+end
+
+--- Make sure a kakoune daemon exists for the given session name and
+--- remember it for cleanup.
+---
+--- Spawns `kak -d -s <session> -E <preamble>` via `vim.system` so the
+--- server process is independent of any single client. The parent
+--- nvim does not own a pipe to it (stdout/stderr=false), so closing
+--- the last client doesn't kill the daemon via inherited-pipe EOF.
+--- The daemon is killed explicitly via `Session:close()` once the
+--- last client for `<session>` goes away, and again on `VimLeavePre`
+--- as belt-and-suspenders.
+---
+--- When the session name already exists (e.g. user runs `:Kak
+--- --session=foo` against a running foo), `kak -d -s foo` does NOT
+--- spawn a duplicate daemon -- it becomes a thin client connected to
+--- the existing one. We still track that sysobj; killing it on our
+--- close path just disconnects our half of the multiplex without
+--- disturbing the foreign daemon.
+---
+--- Returns nothing; raises if the spawn itself fails (e.g. kak binary
+--- not on PATH).
+---@param session string
+function M._ensure_daemon(session)
+  if DAEMONS[session] and not DAEMONS[session]:is_closing() then return end
+  local argv = { 'kak', '-d', '-s', session, '-E', daemon_preamble() }
+  local ok, sys_or_err = pcall(vim.system, argv, {
+    stdout = false,
+    stderr = false,
+  }, nil)
+  if not ok then
+    ---@cast sys_or_err string
+    local err = sys_or_err
+    local sfx = err:match('ENOENT')
+        and '. The command is either not installed, missing from PATH, or not executable.'
+      or string.format(' with error message: %s', err)
+    error(('Spawning kak daemon failed%s'):format(sfx))
+  end
+  ---@cast sys_or_err vim.SystemObj
+  DAEMONS[session] = sys_or_err
+  -- 200ms pragmatic delay for the daemon to bind its socket. A
+  -- future revision could poll `kak -c <session>` for a successful
+  -- connect; today the delay is short enough that interactive `:Kak`
+  -- users won't notice but long enough that the client spawn that
+  -- follows finds the session ready.
+  vim.wait(200, function() return false end, 25)
+end
+
 ---@param opts kak.ui.OpenOpts?
 ---@return kak.ui.Session
 function M.open(opts)
   opts = require('kak.ui.windowing').inject_args(opts)
   local cmd = opts.cmd or { 'kak' }
   local session = opts.session
+  local is_fake = opts.cmd ~= nil
+
+  -- Real-kak path: ensure a daemon exists for our session name. The
+  -- fake-kak tests in `test/multi_client_spec.lua` pass a custom
+  -- `opts.cmd` (the fake-kak-server fixture is both server + client
+  -- in one process) -- spawning a `kak -d` for them would only
+  -- confuse things, so we skip.
+  if not is_fake then
+    if not session or session == '' then session = M._gen_session() end
+    M._ensure_daemon(session)
+    opts.session = session
+  end
 
   local argv = {}
   for _, a in ipairs(cmd) do
@@ -212,6 +310,26 @@ function M.open(opts)
       -- survivor-switch above already replaced it, so this guard
       -- is what handles the no-survivor case.
       if current_session == self then current_session = nil end
+      -- Kill the daemon for this session name when no other live
+      -- session shares it. Iterating AFTER removing `self` from
+      -- SESSIONS means a count of 0 means "self was the last client
+      -- for this session name". Skip the kill entirely for fake-kak
+      -- sessions (no daemon was ever spawned for them).
+      if not is_fake and self.surface and self.surface.session then
+        local session_name = self.surface.session
+        local still_used = false
+        for _, s in pairs(SESSIONS) do
+          if s ~= self and not s.closed and s.surface and s.surface.session == session_name then
+            still_used = true
+            break
+          end
+        end
+        if not still_used then
+          local d = DAEMONS[session_name]
+          if d and not d:is_closing() then pcall(function() d:kill(15) end) end
+          DAEMONS[session_name] = nil
+        end
+      end
       -- Focus move + dead-window removal are nvim API calls that
       -- may run from `on_exit` (off the main loop). The
       -- synchronous Lua-var write above already restored input
@@ -287,14 +405,21 @@ function M.close(buf_or_sess)
   if s then s:close() end
 end
 
--- Iterate every live session on shutdown so the kak-child processes
--- get a chance to terminate cleanly. VimLeavePre fires in reverse
--- insertion order, but iteration is independent of order here.
+-- Iterate every live session + daemon on shutdown so the kak
+-- processes get a chance to terminate cleanly. `Session:close()`
+-- already kills its daemon when the last client for that session
+-- name goes away, but the user might quit nvim without closing
+-- each session individually -- in which case the daemons would
+-- otherwise linger until their own `kak -d` parent (this nvim)
+-- exits. Belt-and-suspenders: kill them here too.
 vim.api.nvim_create_autocmd('VimLeavePre', {
   group = vim.api.nvim_create_augroup('KakUiShutdown', { clear = true }),
   callback = function()
     for _, s in pairs(SESSIONS) do
       if s.conn then s.conn:terminate() end
+    end
+    for _, d in pairs(DAEMONS) do
+      pcall(function() d:kill(15) end)
     end
   end,
 })
