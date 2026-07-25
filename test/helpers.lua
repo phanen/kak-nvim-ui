@@ -86,13 +86,14 @@ end
 function M.fake_kak_nvim_path() return os.getenv('NVIM_PRG') or M.fn.exepath('nvim') or 'nvim' end
 
 ---@param spec_lua_src string
----@param opts? { wire_log?: string }
+---@param opts? { wire_log?: string, log_level?: string, on_notify?: fun(method: string, params?: any[]): any }
 ---@param body fun(sess: any, captured: table, ...): any
 function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
   if type(opts) == 'function' then
     body, opts = opts, nil
   end
   opts = opts or {}
+  local log_level = opts.log_level or 'DEBUG'
   -- LuaJIT `...` resolves only in immediate vararg scope; capture first.
   local forward = { ... }
   local n_forward = select('#', ...)
@@ -111,20 +112,32 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
     env.FAKE_KAK_WIRE_LOG = opts.wire_log
   end
 
+  local custom_on_notify_src = opts.on_notify and string.dump(opts.on_notify) or nil
+
   local result
   local ok, err = pcall(function()
-    result = exec_lua(function(cmd, env, wire_log, body_src, fwd, n_fwd)
+    result = exec_lua(function(cmd, env, wire_log, log_level, custom_on_notify, body_src, fwd, n_fwd)
       -- Set logger env BEFORE requiring the plugin.
       if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
         vim.env.KAK_UI_LOG_FILE = wire_log
-        vim.env.KAK_UI_LOG_LEVEL = 'DEBUG'
+        vim.env.KAK_UI_LOG_LEVEL = log_level
       end
       local body = assert(loadstring(body_src))
       local rpc = require('kak.ui.json_rpc')
       local captured = {}
+      local on_notify
+      if custom_on_notify ~= nil and custom_on_notify ~= vim.NIL and custom_on_notify ~= '' then
+        local user_notify = assert(loadstring(custom_on_notify))
+        on_notify = function(method, params)
+          captured[#captured + 1] = { method, params }
+          user_notify(method, params)
+        end
+      else
+        on_notify = function(method, params) captured[#captured + 1] = { method, params } end
+      end
       local spawn_opts = {
         dispatchers = {
-          on_notify = function(method, params) captured[#captured + 1] = { method, params } end,
+          on_notify = on_notify,
           on_request = function(method, _params)
             return nil, { code = -32601, message = 'not implemented: ' .. method }
           end,
@@ -137,13 +150,32 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
       local got = body(sess, captured, unpack(fwd, 1, n_fwd))
       sess:terminate()
       return got
-    end, cmd, env, opts.wire_log or '', string.dump(body), forward, n_forward)
+    end, cmd, env, opts.wire_log or '', log_level, custom_on_notify_src or '', string.dump(body), forward, n_forward)
   end)
 
   M.sleep(200)
   os.remove(spec_path)
   if not ok then error(err) end
   return result
+end
+
+--- Poll `buf` until `predicate(lines)` returns true, or `timeout` ms.
+---@param buf integer
+---@param predicate fun(lines: string[]): boolean
+---@param timeout? integer
+---@return string[]?
+function M.wait_for_lines(buf, predicate, timeout)
+  timeout = timeout or 3000
+  local got = nil
+  vim.wait(timeout, function()
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    if predicate(lines) then
+      got = lines
+      return true
+    end
+    return false
+  end)
+  return got
 end
 
 ---@param logfile? string
@@ -232,6 +264,7 @@ function M.assert_nolog(pat, logfile, nrlines)
       end
     end
   end)
+  return true
 end
 
 return M
