@@ -171,6 +171,10 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
   local forward = { ... }
   local n_forward = select('#', ...)
 
+  -- Spec is a plain Lua source file loaded by `nvim -l`; it does not
+  -- need the executable bit, so skip the wrapper script and pass the
+  -- argv directly to vim.system. Same for env: forwarded through
+  -- `opts.env` on rpc.spawn instead of prefixed in a shell wrapper.
   local spec_path = M.fn.tempname()
   local spec_f = assert(io.open(spec_path, 'w'))
   spec_f:write(spec_lua_src)
@@ -178,27 +182,20 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
 
   local fixture = M.fake_kak_fixture_path()
   local nvim_path = M.fake_kak_nvim_path()
-  local prefix = ''
-  if opts.wire_log then prefix = 'FAKE_KAK_WIRE_LOG=' .. opts.wire_log .. ' ' end
-  local wrapper = write_tmp_exe(
-    '#!/bin/sh\n'
-      .. prefix
-      .. "exec '"
-      .. nvim_path
-      .. "' -l '"
-      .. fixture
-      .. "' '"
-      .. spec_path
-      .. "'\n"
-  )
+  local cmd = { nvim_path, '-l', fixture, spec_path }
+  -- Keep env a table (never nil) so exec_lua packs the variadic args
+  -- as a dense array; nvim_exec_lua rejects sparse arrays. The child
+  -- decides whether to forward env to vim.system based on emptiness.
+  local env = {}
+  if opts.wire_log then env = { FAKE_KAK_WIRE_LOG = opts.wire_log } end
 
   local result
   local ok, err = pcall(function()
-    result = exec_lua(function(fake_path, body_src, fwd, n_fwd)
+    result = exec_lua(function(cmd, env, body_src, fwd, n_fwd)
       local body = assert(loadstring(body_src))
       local rpc = require('kak.ui.json_rpc')
       local captured = {}
-      local sess = rpc.spawn({ fake_path }, {
+      local spawn_opts = {
         dispatchers = {
           on_notify = function(method, params) captured[#captured + 1] = { method, params } end,
           on_request = function(method, _params)
@@ -210,15 +207,16 @@ function M.with_fake_kak_server(spec_lua_src, opts, body, ...)
           on_exit = function() end,
           on_error = function(code, err) captured[#captured + 1] = { 'error', { code, err } } end,
         },
-      })
+      }
+      if next(env) then spawn_opts.env = env end
+      local sess = rpc.spawn(cmd, spawn_opts)
       local got = body(sess, captured, unpack(fwd, 1, n_fwd))
       sess:terminate()
       return got
-    end, wrapper, string.dump(body), forward, n_forward)
+    end, cmd, env, string.dump(body), forward, n_forward)
   end)
 
   M.sleep(200)
-  os.remove(wrapper)
   os.remove(spec_path)
   if not ok then error(err) end
   return result
