@@ -1,12 +1,14 @@
 -- Test helpers. Re-exports nvim-test's and adds:
 --   write_executable / write_file / write_wire_logged - tmp scripts/files
 --   with_kak_session / with_fake_kak - spawn and run a body in the child
+--   with_screen - attach a Screen for screen:expect / snapshot_util
 
 local helpers = require('nvim-test.helpers')
 
 local M = helpers
 
 local exec_lua = helpers.exec_lua
+local Screen = require('nvim-test.screen')
 
 --- Append project root to the child's runtimepath. Call in before_each.
 function M.setup()
@@ -117,6 +119,20 @@ function M.with_fake_kak(script, body, ...)
   M.sleep(200)
   os.remove(fake_path)
   return result
+end
+
+--- Attach a `nvim-test.screen.Screen` to the current test session.
+--- Use in `before_each` so redraw events from `kak.ui` (driven via
+--- `exec_lua` in the test body) flow into the screen, then call
+--- `screen:expect(...)` from the test body to assert the rendered grid.
+--- Detach in `after_each`.
+--- @param width integer
+--- @param height integer
+--- @return table -- Screen instance.
+function M.with_screen(width, height)
+  local screen = Screen.new(width, height)
+  screen:attach()
+  return screen
 end
 
 return M
