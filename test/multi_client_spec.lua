@@ -334,4 +334,78 @@ describe('multi client', function()
     )
     h.eq(true, capture.b_still_alive)
   end)
+
+  -- Regression for "external focus events (mouse click, :new) should
+  -- switch the kak window": after :KakNewWin the new split must be the
+  -- current session/focused window, WinEnter must track window
+  -- switches, and focus_active must focus whichever session is current.
+  it('focus tracks the active window and focus_active targets it', function()
+    local result = h.exec_lua(function(spec_a_src, spec_b_src)
+      local ui = require('kak.ui')
+      local w = require('kak.ui.windowing')
+      local helpers = require('test.helpers')
+      local nvim_path = helpers.fake_kak_nvim_path()
+      local fixture = helpers.fake_kak_fixture_path()
+
+      local function write_spec(src)
+        local p = vim.fn.tempname() .. '.lua'
+        local f = assert(io.open(p, 'w'))
+        f:write(src)
+        f:close()
+        return p
+      end
+      local spec_a = write_spec(spec_a_src)
+      local spec_b = write_spec(spec_b_src)
+
+      local function open_fake(spec_path, name)
+        vim.cmd('vsplit')
+        return ui.open({
+          cmd = { nvim_path, '-l', fixture, spec_path },
+          session = name,
+          extra_args = { '-e', 'set global kak_session ' .. name },
+        })
+      end
+
+      local sess_a = open_fake(spec_a, 'a')
+      local win_a = sess_a.surface.content_win
+      local sess_b = open_fake(spec_b, 'b')
+      local win_b = sess_b.surface.content_win
+
+      -- :KakNewWin's vsplit focuses the new window and open() sets
+      -- current to it, so after opening b the focus + current is b.
+      local current_after_open = ui.current()
+      local focused_after_open = vim.api.nvim_get_current_win()
+
+      -- focus_active must focus the current (b) session's window.
+      w.focus_active()
+      local focused_after_focus_b = vim.api.nvim_get_current_win()
+
+      -- Switching to a's window fires WinEnter -> set_current(a).
+      vim.api.nvim_set_current_win(win_a)
+      local current_after_switch = ui.current()
+
+      -- focus_active now targets a.
+      w.focus_active()
+      local focused_after_focus_a = vim.api.nvim_get_current_win()
+
+      sess_a:close()
+      sess_b:close()
+      os.remove(spec_a)
+      os.remove(spec_b)
+
+      return {
+        current_is_b_after_open = current_after_open == sess_b,
+        focused_is_b = focused_after_open == win_b,
+        focus_active_targets_b = focused_after_focus_b == win_b,
+        current_is_a_after_switch = current_after_switch == sess_a,
+        focus_active_targets_a = focused_after_focus_a == win_a,
+      }
+    end, FAKE_KAK_SPEC, FAKE_KAK_SPEC_B)
+
+    h.eq(true, result.current_is_b_after_open)
+    h.eq(true, result.focused_is_b)
+    h.eq(true, result.focus_active_targets_b)
+    h.eq(true, result.current_is_a_after_switch)
+    h.eq(true, result.focus_active_targets_a)
+  end)
 end)
