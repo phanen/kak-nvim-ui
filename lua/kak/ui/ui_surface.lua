@@ -45,6 +45,8 @@
 
 local M = {}
 
+local log = require('kak.ui.log').log
+
 ---@param session? string
 ---@return string
 local function bufname(session) return session and ('kak://' .. session) or 'kak://main' end
@@ -187,6 +189,15 @@ function Surface:ensure_status_float()
 end
 
 function Surface:close()
+  local n_wins = nil
+  if self.content_win and vim.api.nvim_win_is_valid(self.content_win) then
+    local tab = vim.api.nvim_win_get_tabpage(self.content_win)
+    n_wins = #vim.api.nvim_tabpage_list_wins(tab)
+  end
+  log.debug(
+    'surface:close',
+    { content_win = self.content_win, n_wins = n_wins, session = self.session }
+  )
   -- Tear down the status float first; the buffer's bufhidden=wipe
   -- handles cleanup once its only window closes.
   if self.status_win and vim.api.nvim_win_is_valid(self.status_win) then
@@ -203,8 +214,8 @@ function Surface:close()
   -- buffer; the user can `:bd` manually instead.
   if self.content_win and vim.api.nvim_win_is_valid(self.content_win) then
     local tab = vim.api.nvim_win_get_tabpage(self.content_win)
-    local n_wins = #vim.api.nvim_tabpage_list_wins(tab)
-    if n_wins > 1 then pcall(vim.api.nvim_win_close, self.content_win, true) end
+    local n_wins_now = #vim.api.nvim_tabpage_list_wins(tab)
+    if n_wins_now > 1 then pcall(vim.api.nvim_win_close, self.content_win, true) end
   end
   -- Detach: drop our references to the buffers/window. The buffer is
   -- wiped by nvim once the last window displaying it closes (or

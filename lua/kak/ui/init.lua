@@ -94,6 +94,14 @@ end
 ---@return table<string, vim.SystemObj>
 function M._daemons() return DAEMONS end
 
+--- Snapshot of the SESSIONS table for tests. Returns the live
+--- reference so tests can write to it (`ui._sessions()[buf] =
+--- fake_session`) to exercise per-buffer routing paths. Production
+--- code must NOT use this handle; sessions are added/removed by
+--- `open()` / `Session:close()` exclusively.
+---@return table<integer, kak.ui.Session>
+function M._sessions() return SESSIONS end
+
 --- Generate a unique kakoune session name for `:Kak` calls that do
 --- not pass `--session=<name>`. Combining pid + monotonic counter
 --- guarantees uniqueness across rapid successive `:Kak` invocations
@@ -233,6 +241,7 @@ function M.open(opts)
       return nil, { code = -32601, message = 'method not found: ' .. method }
     end,
     on_exit = function(code, signal)
+      log.info('on_exit fired', { code = code, signal = signal, session_id = sess and sess.id })
       vim.schedule(
         function()
           vim.notify(
@@ -271,6 +280,7 @@ function M.open(opts)
     augroup = 0,
     closed = false,
     close = function(self)
+      log.debug('close start', { id = self.id })
       if self.closed then return end
       -- Find a survivor BEFORE tearing down. When the closing
       -- session is the current one and other live sessions exist,
@@ -297,13 +307,16 @@ function M.open(opts)
         end
         if survivor then M.set_current(survivor) end
       end
+      log.debug('close: survivor', { id = survivor and survivor.id })
       self.closed = true
       if self.conn and not self.conn:is_closing() then self.conn:terminate() end
       if self.surface then
         self.surface.rpc = nil
         self.surface:close()
       end
+      log.debug('close: surface:close done')
       if self.input then self.input:disable() end
+      log.debug('close: input disabled')
       pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
       SESSIONS[self.id] = nil
       -- Only clear `current_session` if it still refers to us. The
@@ -328,6 +341,7 @@ function M.open(opts)
           local d = DAEMONS[session_name]
           if d and not d:is_closing() then pcall(function() d:kill(15) end) end
           DAEMONS[session_name] = nil
+          log.debug('close: daemon killed', { session = session_name })
         end
       end
       -- Focus move + dead-window removal are nvim API calls that
@@ -347,6 +361,7 @@ function M.open(opts)
           end
         end)
       end
+      log.debug('close: done', { id = self.id })
     end,
   }
   -- Now that `sess` exists, hook the handlers back to it so

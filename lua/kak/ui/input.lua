@@ -260,7 +260,54 @@ function Handler:enable()
       if type(typed) ~= 'string' or #typed == 0 then return '' end
       local cur = vim.api.nvim_get_current_buf()
       local sess = session_for_current_buf(cur)
-      if not sess then return '' end
+      if not sess then
+        -- ANTI-TRAP for the `:q` hang. `vim.system`'s `on_exit`
+        -- fires only after stdout EOF (neovim #33627), so there is
+        -- a window where the client process has already exited
+        -- (`is_closing()` -> true, `session_for_current_buf` returns
+        -- nil) but `on_exit` hasn't fired yet. During that gap the
+        -- user is in a dead window with no live input routing; the
+        -- OLD `return ''` would drop every key and trap them. Detect
+        -- the dead session from the still-resident SESSIONS entry
+        -- (or `current()` if the buffer no longer belongs to a
+        -- session) and schedule its close so `current_session`
+        -- flips to a survivor + the dead window is removed next
+        -- tick. Also pass THIS key through to nvim so the user can
+        -- act during the one-tick scheduling gap (`:wincmd`, `:bd`).
+        local m = require('kak.ui')
+        local dead = m.session_for_buf(cur)
+        if not dead or dead.closed or not dead.conn or not dead.conn:is_closing() then
+          local cur_sess = m.current()
+          if cur_sess and not cur_sess.closed and cur_sess.conn and cur_sess.conn:is_closing() then
+            dead = cur_sess
+          else
+            dead = nil
+            for _, s in m._iter() do
+              if not s.closed and s.conn and s.conn:is_closing() then
+                dead = s
+                break
+              end
+            end
+          end
+        end
+        if dead and not dead.closed and dead.conn and dead.conn:is_closing() then
+          log.debug('on_key: dead session, scheduling close + pass-through', {
+            cur = cur,
+            dead_id = dead.id,
+          })
+          local d = dead
+          vim.schedule(function()
+            pcall(function() d:close() end)
+          end)
+        end
+        return typed
+      end
+      log.trace('on_key', {
+        typed = typed:sub(1, 20),
+        cur = cur,
+        sess = sess.id,
+        conn_closing = sess.conn and sess.conn:is_closing() or nil,
+      })
       local keys = M.from_on_key(typed)
       if #keys > 0 then
         local ok, err = pcall(sess.conn.notify, sess.conn, 'keys', keys)

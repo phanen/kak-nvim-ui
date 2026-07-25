@@ -375,4 +375,191 @@ describe('input handler routing', function()
     h.eq(false, probe.paste_is_saved_after_dis_a)
     h.eq(true, probe.paste_is_saved_after_dis_b)
   end)
+
+  -- Regression for the `:q` hang. When kak's client process exits,
+  -- `is_closing()` flips true immediately, but `vim.system`'s
+  -- `on_exit` is gated on stdout EOF (neovim #33627) and may be
+  -- delayed or never fire (e.g. a grandchild inherited the pipe).
+  -- During that gap, `session_for_current_buf` drops the dead
+  -- session (its is_closing guard), so the global on_key listener
+  -- would return '' and trap the user. The safety net:
+  --   1. detects a dead session (per cur-owner or current() fallback)
+  --   2. schedules sess:close() so current_session flips to a
+  --      survivor + the dead window is removed next tick
+  --   3. passes this key through (returns typed) so the user can
+  --      act during the one-tick scheduling gap
+  it('on_key safety net: dead current session gets scheduled close + pass-through', function()
+    local result = h.exec_lua(function()
+      local ui = require('kak.ui')
+      local input = require('kak.ui.input')
+
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].buftype = 'nofile'
+
+      local close_called = 0
+      local close_log = {}
+      local dead_conn = {
+        is_closing = function() return true end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local dead_session = {
+        id = buf,
+        conn = dead_conn,
+        handlers = nil,
+        surface = nil,
+        input = nil,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          close_called = close_called + 1
+          close_log[#close_log + 1] = { step = 'enter', closed = self.closed }
+          if self.closed then return end
+          self.closed = true
+          close_log[#close_log + 1] = { step = 'mark' }
+          if self.conn and not self.conn:is_closing() then self.conn:terminate() end
+          if ui.current() == self then ui.set_current(nil) end
+          close_log[#close_log + 1] = { step = 'leave' }
+        end,
+      }
+
+      -- Handler for the listener install; uses a SEPARATE live
+      -- conn so the listener enables even though `dead_conn` is
+      -- already "closing". The listener itself only needs to be
+      -- installed for `_on_key_fn` to exist; the dead branch
+      -- doesn't care about the handler's own conn.
+      local live_conn = {
+        is_closing = function() return false end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local handler = input.new({ rpc = live_conn })
+      handler:enable()
+      vim.api.nvim_set_current_buf(buf)
+      ui.set_current(dead_session)
+
+      local fn = assert(input._on_key_fn(), 'global on_key should be installed')
+      -- <Esc> is the canonical trapped key.
+      local ret = fn('', '\27')
+      local closed_sync = dead_session.closed
+      local close_count_sync = close_called
+
+      -- Wait for the scheduled close to fire (vim.schedule drain).
+      local waited = vim.wait(500, function() return dead_session.closed end)
+      local closed_async = dead_session.closed
+      local close_count_async = close_called
+      local current_after = ui.current()
+
+      handler:disable()
+      ui.set_current(nil)
+      return {
+        ret = ret,
+        closed_sync = closed_sync,
+        closed_async = closed_async,
+        close_count_sync = close_count_sync,
+        close_count_async = close_count_async,
+        waited = waited,
+        current_after = current_after,
+        close_log = close_log,
+      }
+    end)
+    -- 1. Pass-through: the key returns AS-IS, not the empty drop.
+    --    The trap would be returning '' -- the safety net returns
+    --    the typed bytes so nvim processes the key.
+    h.eq('\27', result.ret)
+    -- 2. The close was NOT called synchronously (it's behind
+    --    vim.schedule). Confirm: closed=false right after on_key
+    --    returns.
+    h.eq(false, result.closed_sync)
+    h.eq(0, result.close_count_sync)
+    -- 3. After pumping the event loop, the scheduled close fired
+    --    exactly once -- not zero, not twice (idempotency via the
+    --    `closed` guard means a future real on_exit -> close would
+    --    short-circuit).
+    h.eq(true, result.waited)
+    h.eq(true, result.closed_async)
+    h.eq(1, result.close_count_async)
+    -- 4. The dead session's close wiped current_session (no
+    --    survivor was registered in this minimal test).
+    h.eq(nil, result.current_after)
+    -- 5. Close log shows the sequence: enter -> mark -> leave
+    --    (idempotency guard never short-circuited).
+    h.eq('enter', result.close_log[1].step)
+    h.eq('mark', result.close_log[2].step)
+    h.eq('leave', result.close_log[3].step)
+  end)
+
+  -- Regression: when the dead session is the one registered as the
+  -- OWNER of the current buffer (not just `current()`), the
+  -- per-cur `session_for_buf` lookup is the path that finds it.
+  -- The current() fallback is a secondary path; both must converge
+  -- on the same scheduled close + pass-through behavior.
+  it('on_key safety net: dead session that owns cur is found via session_for_buf', function()
+    local result = h.exec_lua(function()
+      local ui = require('kak.ui')
+      local input = require('kak.ui.input')
+
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].buftype = 'nofile'
+
+      -- Pre-register the fake dead session in SESSIONS via the
+      -- `_sessions()` test handle, so `session_for_buf(buf)` is the
+      -- path that finds it (not the current() fallback).
+      local close_called = 0
+      local dead_conn = {
+        is_closing = function() return true end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local dead_session = {
+        id = buf,
+        conn = dead_conn,
+        handlers = nil,
+        surface = nil,
+        input = nil,
+        augroup = 0,
+        closed = false,
+        close = function(self)
+          close_called = close_called + 1
+          if self.closed then return end
+          self.closed = true
+        end,
+      }
+      ui._sessions()[buf] = dead_session
+
+      local live_conn = {
+        is_closing = function() return false end,
+        terminate = function() end,
+        notify = function() end,
+      }
+      local handler = input.new({ rpc = live_conn })
+      handler:enable()
+      vim.api.nvim_set_current_buf(buf)
+      -- Intentionally NOT set_current -- we want the per-cur
+      -- session_for_buf path to be the one that finds the dead
+      -- session.
+
+      local fn = assert(input._on_key_fn(), 'global on_key should be installed')
+      local ret = fn('', '\27')
+      local closed_sync = dead_session.closed
+      local waited = vim.wait(500, function() return dead_session.closed end)
+      local closed_async = dead_session.closed
+      local close_count = close_called
+
+      handler:disable()
+      ui._sessions()[buf] = nil
+      return {
+        ret = ret,
+        closed_sync = closed_sync,
+        closed_async = closed_async,
+        close_count = close_count,
+        waited = waited,
+      }
+    end)
+    h.eq('\27', result.ret)
+    h.eq(false, result.closed_sync)
+    h.eq(true, result.waited)
+    h.eq(true, result.closed_async)
+    h.eq(1, result.close_count)
+  end)
 end)
