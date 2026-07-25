@@ -143,7 +143,8 @@ function Manager:_menu_float(items, anchor, fg, bg, style)
     math.min(#items, MENU_MAX_HEIGHT),
     math.max(items_w, 1)
   )
-  local buf, win = float.open_menu(items, bg, geom, self.faces)
+  local buf, win =
+    float.open_menu(items, bg, geom, self.faces, self.surface and self.surface.content_win)
   self.menu_state = {
     kind = 'float',
     buf = buf,
@@ -260,8 +261,17 @@ function Manager:_info_float(title, content, anchor, face, style)
   local geom =
     layout.info_geom(style, geom0, anchor, self:_menu_rect(), title, content, self:editor_dims())
   local focusable = (style == 'modal')
-  local buf, win =
-    float.open_info(self.float_ns, title, content, face, style, geom, focusable, self.faces)
+  local buf, win = float.open_info(
+    self.float_ns,
+    title,
+    content,
+    face,
+    style,
+    geom,
+    focusable,
+    self.faces,
+    self.surface and self.surface.content_win
+  )
   self.info_state = { kind = 'float', buf = buf, win = win, style = style }
   return 'float'
 end

@@ -64,9 +64,10 @@ end
 ---@param bg kak.ui.faces.Face?
 ---@param geom kak.ui.popups.layout.Geom geometry from `layout.menu_pos`
 ---@param cache kak.ui.faces.Cache
+---@param content_win integer? owning content window for `relative='win'`
 ---@return integer buf
 ---@return integer win
-function M.open_menu(items, bg, geom, cache)
+function M.open_menu(items, bg, geom, cache, content_win)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
   local lines = layout.lines_to_text(items)
@@ -76,9 +77,23 @@ function M.open_menu(items, bg, geom, cache)
   local bg_hl = cache:get(bg)
   local anchor = geom.win_anchor
   ---@cast anchor 'NW'|'NE'|'SW'|'SE'
+  -- Anchor to the owning content window (not the editor) so a sibling
+  -- kak split's menu does not render in the wrong window. The geom
+  -- row/col are already content-window-scoped (editor_dims returns the
+  -- content_win's width/height), so they translate directly. Fall back
+  -- to editor-relative when we have no valid content_win (tests).
+  local relative ---@type 'cursor'|'editor'|'laststatus'|'mouse'|'tabline'|'win'
+  local win_opt = nil
+  if content_win and vim.api.nvim_win_is_valid(content_win) then
+    relative = 'win'
+    win_opt = content_win
+  else
+    relative = 'editor'
+  end
   ---@type vim.api.keyset.win_config
   local config = {
-    relative = 'editor',
+    relative = relative,
+    win = win_opt,
     anchor = anchor,
     style = 'minimal',
     width = math.max(geom.width, 1),
@@ -108,18 +123,28 @@ end
 ---@param geom kak.ui.popups.layout.Geom geometry from `layout.info_geom`
 ---@param focusable boolean
 ---@param cache kak.ui.faces.Cache
+---@param content_win integer? owning content window for `relative='win'`
 ---@return integer buf
 ---@return integer win
-function M.open_info(ns, title, content, face, style, geom, focusable, cache)
+function M.open_info(ns, title, content, face, style, geom, focusable, cache, content_win)
   local framed = (style == 'prompt') or (style == 'modal')
   local buf = vim.api.nvim_create_buf(false, true)
 
   local hl = cache:get(face)
   local anchor = geom.win_anchor
   ---@cast anchor 'NW'|'NE'|'SW'|'SE'
+  local relative ---@type 'cursor'|'editor'|'laststatus'|'mouse'|'tabline'|'win'
+  local win_opt = nil
+  if content_win and vim.api.nvim_win_is_valid(content_win) then
+    relative = 'win'
+    win_opt = content_win
+  else
+    relative = 'editor'
+  end
   ---@type vim.api.keyset.win_config
   local config = {
-    relative = 'editor',
+    relative = relative,
+    win = win_opt,
     anchor = anchor,
     style = 'minimal',
     width = geom.width,
