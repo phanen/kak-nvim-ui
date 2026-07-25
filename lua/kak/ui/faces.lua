@@ -23,8 +23,6 @@
 
 local M = {}
 
-local HL_NS = vim.api.nvim_create_namespace('kak-ui-faces')
-
 ---@type table<string, string>
 local NAMED_TO_HEX = {
   default = 'default',
@@ -290,7 +288,7 @@ function Cache:get(face)
   end
   self.counter = self.counter + 1
   local name = face and string.format('KakFace_%08x', fnv1a(key)) or 'KakDefault'
-  pcall(vim.api.nvim_set_hl, HL_NS, name, face_to_val(face, { default = (face == nil) }))
+  pcall(vim.api.nvim_set_hl, 0, name, face_to_val(face, { default = (face == nil) }))
   self.by_key[key] = {
     name = name,
     key = key,

@@ -33,7 +33,7 @@ local function truncate_log(logfile)
   f:close()
 end
 
----@param opts { cmd?: string[], extra_args?: string[], wire_log?: string }
+---@param opts { cmd?: string[], extra_args?: string[], wire_log?: string, log_level?: string }
 ---@param body fun(sess: any, ...): any
 function M.with_kak_session(opts, body, ...)
   local cmd = opts.cmd or { 'kak' }
@@ -41,19 +41,25 @@ function M.with_kak_session(opts, body, ...)
 
   if opts.wire_log then truncate_log(opts.wire_log) end
 
+  local log_level = opts.log_level or 'DEBUG'
+
   -- busted's finally() cannot be used from module-level helpers.
   -- '' sentinel keeps exec_lua varargs dense.
-  local ok, result = pcall(exec_lua, function(cmd, extra_args, wire_log, body_src, ...)
+  -- Note: `body` is dump+load'd by exec_lua, so any closure over test
+  -- scope is lost. Tests that need to capture wire should define the
+  -- capture closure inside `body`, where it shares upvalues with the
+  -- captured table directly.
+  local ok, result = pcall(exec_lua, function(cmd, extra_args, wire_log, log_level, body_src, ...)
     if wire_log ~= nil and wire_log ~= vim.NIL and wire_log ~= '' then
       vim.env.KAK_UI_LOG_FILE = wire_log
-      vim.env.KAK_UI_LOG_LEVEL = 'DEBUG'
+      vim.env.KAK_UI_LOG_LEVEL = log_level
     end
     local body = assert(loadstring(body_src))
     local sess = require('kak.ui').open({ cmd = cmd, extra_args = extra_args })
     local got = body(sess, ...)
     sess:close()
     return got
-  end, cmd, extra_args, opts.wire_log or '', string.dump(body), ...)
+  end, cmd, extra_args, opts.wire_log or '', log_level, string.dump(body), ...)
 
   M.sleep(200)
   if not ok then error(result) end
@@ -84,6 +90,9 @@ end
 
 ---@return string
 function M.fake_kak_nvim_path() return os.getenv('NVIM_PRG') or M.fn.exepath('nvim') or 'nvim' end
+
+---@return string
+function M.kak_path() return os.getenv('KAK_PRG') or M.fn.exepath('kak') or 'kak' end
 
 ---@param spec_lua_src string
 ---@param opts? { wire_log?: string, log_level?: string, on_notify?: fun(method: string, params?: any[]): any }
@@ -187,28 +196,58 @@ function M.default_log_path(logfile)
   return M.fn.stdpath('log') .. '/kak-ui.log'
 end
 
+--- Create a fresh, empty log file under a tempdir. Returns the log
+--- path and its directory (for cleanup).
+---@return string log path
+---@return string dir containing the log
+function M.fresh_log()
+  local dir = M.fn.tempname()
+  M.fn.mkdir(dir, 'p')
+  local log = dir .. '/kak-ui.log'
+  local f = assert(io.open(log, 'w'))
+  f:close()
+  return log, dir
+end
+
+--- Read a log file into a list of lines. Useful for dumping NDJSON
+--- captured by `fake-kak-server` (`FAKE_KAK_WIRE_LOG`) or the plugin
+--- logger so a test can decode and assert on payload contents.
+---
+--- Returns {} when the file is missing.
 ---@param logfile string
----@param nrlines integer
+---@param opts? { n?: integer, tail_bytes?: integer }
 ---@return string[]
-local function read_log_tail(logfile, nrlines)
+function M.read_log(logfile, opts)
+  opts = opts or {}
+  local tail_bytes = opts.tail_bytes or 2000000
   local f = io.open(logfile, 'r')
   if not f then return {} end
   local size = f:seek('end')
-  local offset = size and (size - 2000000) or 0
+  local offset = size and (size - tail_bytes) or 0
   if offset < 0 then offset = 0 end
   f:seek('set', offset)
   local content = f:read('*a') or ''
   f:close()
   local lines = vim.split(content, '\n', { plain = true })
-  if #lines > nrlines then
+  -- Strip the trailing empty string produced when the file ends in
+  -- '\n' (the common case for NDJSON writers and the plugin logger).
+  while #lines > 0 and lines[#lines] == '' do
+    table.remove(lines)
+  end
+  if opts.n and #lines > opts.n then
     local out = {}
-    for i = #lines - nrlines + 1, #lines do
+    for i = #lines - opts.n + 1, #lines do
       out[#out + 1] = lines[i]
     end
     return out
   end
   return lines
 end
+
+---@param logfile string
+---@param nrlines integer
+---@return string[]
+local function read_log_tail(logfile, nrlines) return M.read_log(logfile, { n = nrlines }) end
 
 --- Poll `logfile` until `check(lines)` returns true, or 1 s deadline.
 --- `check` may also call error() to fail immediately. Returns the final
