@@ -119,6 +119,58 @@ describe('popups layout', function()
     h.eq(out.no_menu, out.with_menu)
   end)
 
+  it('info_geom prompt caps height at editor_h - menu_h', function()
+    local out = with_screen([[
+      local layout = require('kak.ui.popups.layout')
+      local function mk(menu_rect)
+        local geom = layout.info_pos(
+          'prompt', { line = 0, column = 0 }, nil,
+          { width = 80, height = 24 }
+        )
+        local content = {}
+        for i = 1, 30 do content[i] = { { face = nil, contents = 'x' } } end
+        return layout.info_geom(
+          'prompt', geom, { line = 0, column = 0 }, menu_rect,
+          { { face = nil, contents = 'T' } }, content,
+          { width = 80, height = 24 }
+        ).height
+      end
+      local with_menu = mk({ pos = { line = 20, column = 0 }, size = { line = 4, column = 80 } })
+      local no_menu = mk(nil)
+      return { with_menu = with_menu, no_menu = no_menu }
+    ]])
+    -- 24 total rows; a 4-row menu at the bottom caps prompt info at
+    -- 24 - 4 = 20. Without a menu the cap is the full 24 rows.
+    h.eq(20, out.with_menu)
+    h.eq(24, out.no_menu)
+  end)
+
+  it('info_geom prompt moves above a bottom-spanning menu', function()
+    local out = with_screen([[
+      local layout = require('kak.ui.popups.layout')
+      local menu_rect = { pos = { line = 20, column = 0 }, size = { line = 4, column = 80 } }
+      local geom = layout.info_pos(
+        'prompt', { line = 0, column = 0 }, nil, { width = 80, height = 24 }
+      )
+      local content = {}
+      for i = 1, 5 do content[i] = { { face = nil, contents = 'x' } } end
+      geom = layout.info_geom(
+        'prompt', geom, { line = 0, column = 0 }, menu_rect,
+        { { face = nil, contents = 'T' } }, content,
+        { width = 80, height = 24 }
+      )
+      return { win_anchor = geom.win_anchor, row = geom.row, col = geom.col }
+    ]])
+    -- Default SE at (24,80) would place the info at rows [16,23] /
+    -- cols [73,79], which overlaps the menu at rows [20,23] / cols
+    -- [0,79]. compute_pos nudges it above the menu: NW anchor, row
+    -- = min(menu_top=20, editor_h=24) - height(=8) = 12, col stays
+    -- right-justified at editor_w - width = 80 - 7 = 73.
+    h.eq('NW', out.win_anchor)
+    h.eq(12, out.row)
+    h.eq(73, out.col)
+  end)
+
   it('frame.box_extmarks places title extmark at prefix-aware column', function()
     local out = with_screen([[
       local cache = require('kak.ui.faces').new()

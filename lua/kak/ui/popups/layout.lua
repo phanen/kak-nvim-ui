@@ -236,28 +236,73 @@ function M.info_geom(style, geom, anchor, menu_rect, title, content, editor_dims
   local maxw = M.lines_max_width(title, content)
   local total_lines = (title and 1 or 0) + #content
 
-  if style == 'prompt' or style == 'modal' then
+  if style == 'modal' then
     -- Kakoune line 1374-1376: max(content, title + 2) + 4 (frame).
     local inner_w = math.max(maxw, M.lines_max_width(title, {}) + 2)
     local width = math.min(inner_w + 4, editor_w)
     local height = math.min(total_lines + 2, editor_h)
-    if style == 'modal' then
-      -- Kakoune line 1390-1394: anchor = rect.pos + half(rect.size)
-      -- - half(size); rect uses the FULL editor dims (no menu
-      -- subtraction -- only max_size for MenuDoc / non-modal touches
-      -- menu size, see line 1351-1352 of terminal_ui.cc).
-      local row = math.max(0, math.floor((editor_h - height) / 2))
-      local col = math.max(0, math.floor((editor_w - width) / 2))
-      geom.win_anchor = 'NW'
-      geom.row = row
-      geom.col = col
-    else
-      geom.win_anchor = 'SE'
-      geom.row = editor_h
-      geom.col = editor_w
-    end
+    -- Kakoune line 1390-1394: anchor = rect.pos + half(rect.size)
+    -- - half(size); rect uses the FULL editor dims (no menu
+    -- subtraction -- only max_size for MenuDoc / non-modal touches
+    -- menu size, see line 1351-1352 of terminal_ui.cc).
+    local row = math.max(0, math.floor((editor_h - height) / 2))
+    local col = math.max(0, math.floor((editor_w - width) / 2))
+    geom.win_anchor = 'NW'
+    geom.row = row
+    geom.col = col
     geom.height = height
     geom.width = width
+    return geom
+  end
+
+  if style == 'prompt' then
+    -- Kakoune line 1374-1376: max(content, title + 2) + 4 (frame).
+    local inner_w = math.max(maxw, M.lines_max_width(title, {}) + 2)
+    local width = math.min(inner_w + 4, editor_w)
+    -- Kakoune line 1351-1352: non-modal info max_size.line -= menu
+    -- height so the info never shares rows with the menu.
+    local max_h = editor_h
+    if menu_rect and menu_rect.size.line > 0 then
+      max_h = math.max(1, editor_h - menu_rect.size.line)
+    end
+    local height = math.min(total_lines + 2, max_h)
+    geom.win_anchor = 'SE'
+    geom.row = editor_h
+    geom.col = editor_w
+    geom.height = height
+    geom.width = width
+    -- Kakoune compute_pos (terminal_ui.cc:1281-1296): if the info
+    -- rect still intersects the menu rect after the default SE
+    -- placement (e.g. a prompt menu spans the full width), move the
+    -- info above the menu; if that does not fit, drop it below.
+    -- Rects are content-window-scoped NW+size (open-ended end).
+    if menu_rect and menu_rect.size.line > 0 then
+      local m_pos_l = menu_rect.pos.line
+      local m_pos_c = menu_rect.pos.column
+      local m_end_l = m_pos_l + menu_rect.size.line
+      local m_end_c = m_pos_c + menu_rect.size.column
+      local i_pos_l = editor_h - height
+      local i_pos_c = editor_w - width
+      local i_end_l = i_pos_l + height
+      local i_end_c = i_pos_c + width
+      local intersects = not (
+        i_end_l <= m_pos_l
+        or i_end_c <= m_pos_c
+        or i_pos_l >= m_end_l
+        or i_pos_c >= m_end_c
+      )
+      if intersects then
+        local above_l = math.min(m_pos_l, editor_h) - height
+        if above_l >= 0 then
+          geom.win_anchor = 'NW'
+          geom.row = above_l
+        else
+          geom.win_anchor = 'NW'
+          geom.row = math.max(m_end_l, 0)
+        end
+        geom.col = i_pos_c
+      end
+    end
     return geom
   end
 
