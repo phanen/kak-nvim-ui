@@ -65,6 +65,17 @@ local SEQ = 0
 ---@type kak.ui.Session?
 local current_session = nil
 
+-- Saved user `timeoutlen` so the kak content window can run with
+-- `timeoutlen=0` (see the WinEnter/WinLeave autocmds in `open()`).
+-- `timeoutlen` is a GLOBAL option (no buffer-local scope), so we
+-- toggle it while a kak window is focused + restore on leave. Keys
+-- like `g`, `s`, `<c-w>` are nvim mapping prefixes; with the default
+-- `timeoutlen` (1000ms) nvim blocks in a mapping-wait before the
+-- `vim.on_key` callback even fires, so the typed char reaches kakoune
+-- only after the timeout -- perceived as `:s`/`:g` cmdline lag.
+---@type integer?
+local saved_timeoutlen = nil
+
 --- Locate the session that owns the content buffer `buf`, if any.
 ---@param buf integer
 ---@return kak.ui.Session?
@@ -442,7 +453,11 @@ function M.open(opts)
       vim.api.nvim_create_autocmd('WinEnter', {
         group = augroup,
         buffer = content_bufnr,
-        callback = function() M.set_current(sess) end,
+        callback = function()
+          M.set_current(sess)
+          if saved_timeoutlen == nil then saved_timeoutlen = vim.o.timeoutlen end
+          vim.o.timeoutlen = 0
+        end,
       })
       -- Restore the user's cursor shape when focus leaves the kak
       -- window so non-kak windows keep their own guicursor. The
@@ -450,7 +465,13 @@ function M.open(opts)
       vim.api.nvim_create_autocmd('WinLeave', {
         group = augroup,
         buffer = content_bufnr,
-        callback = function() require('kak.ui.render').restore_cursor_shape() end,
+        callback = function()
+          require('kak.ui.render').restore_cursor_shape()
+          if saved_timeoutlen ~= nil then
+            vim.o.timeoutlen = saved_timeoutlen
+            saved_timeoutlen = nil
+          end
+        end,
       })
     end)
     if not ok then
