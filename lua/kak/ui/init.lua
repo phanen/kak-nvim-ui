@@ -287,6 +287,15 @@ function M.open(opts)
     end
   end
 
+  -- Hand the conn to the surface so `Surface:report_resize` can send
+  -- `resize` to kak. `surface:open` ran BEFORE the conn existed (the
+  -- conn needs the content_buf/window the surface just claimed), so
+  -- `surface.rpc` is still nil here -- without this assignment every
+  -- report_resize bails at the `not self.rpc` guard and kak never
+  -- learns the window size, falling back to its default (half-height)
+  -- layout.
+  surface.rpc = conn
+
   local input_handler = input.new({ rpc = conn, surface = surface })
   input_handler:enable()
   h.session = nil -- final assignment below
