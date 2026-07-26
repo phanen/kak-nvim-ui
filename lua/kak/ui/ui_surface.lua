@@ -143,6 +143,17 @@ function Surface:attach_to_current_win()
   if vim.api.nvim_win_get_buf(win) ~= self.content_buf then
     vim.api.nvim_win_set_buf(win, self.content_buf)
   end
+  -- The kak content buffer stays in nvim NORMAL mode (we never enter
+  -- nvim insert -- that would let nvim swallow keys before `on_key`).
+  -- Normal mode clamps cursor col to `len-1` (`check_cursor_col`,
+  -- cursor.c:338), so a kakoune insert cursor reported at EOL
+  -- (column == line length) lands on the last char -- identical to
+  -- the column-before-EOL position. `virtualedit=onemore` is
+  -- window-local (`scope={global,win}`) and lifts that clamp ONLY in
+  -- this window, letting the beam cursor sit past the last char and
+  -- match kakoune's terminal UI. No save/restore: it is window-local
+  -- and dies with the window.
+  pcall(vim.api.nvim_set_option_value, 'virtualedit', 'onemore', { win = win })
 end
 
 --- Open the status float (1 row at the bottom of the content window).
