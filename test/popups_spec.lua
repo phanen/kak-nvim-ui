@@ -215,8 +215,10 @@ describe('popup window positioning', function()
       }
     ]])
     -- Kakoune draws no border on menus; the bg face fills the region.
+    -- `border = "none"` is the explicit form; nvim 0.11+ reports nil
+    -- for the default-on-float (style="minimal" implies no border).
     assert(
-      result.border == 'none',
+      result.border == 'none' or result.border == nil,
       'expected menu border == "none", got ' .. tostring(result.border)
     )
   end)

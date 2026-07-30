@@ -52,9 +52,15 @@ jobs:
 
       - name: Install kakoune
         run: |
-          sudo apt-get update
-          sudo apt-get install -y kakoune
-          kak --version
+          KAK_VERSION=v2026.05.21
+          curl -fsSL "https://github.com/mawww/kakoune/releases/download/${KAK_VERSION}/kakoune-${KAK_VERSION}-linux.tar.bz2" \
+            | sudo tar -xjf - -C /opt
+          # Some GitHub Actions ubuntu images drop /usr/local/bin from
+          # nvim's PATH. Symlink at /usr/bin too so vim.system resolves
+          # `kak` regardless of PATH ordering.
+          sudo ln -sf /opt/kakoune-${KAK_VERSION}-linux/bin/kak /usr/local/bin/kak
+          sudo ln -sf /opt/kakoune-${KAK_VERSION}-linux/bin/kak /usr/bin/kak
+          kak -version
 
       - name: Run Test
         run: make test
