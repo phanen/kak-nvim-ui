@@ -50,6 +50,12 @@ jobs:
       - name: Download nvim-test
         run: make nvim-test
 
+      - name: Install kakoune
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y kakoune
+          kak --version
+
       - name: Run Test
         run: make test
 
