@@ -23,6 +23,18 @@
 ---@alias kak.ui.input.MouseKind 'press' | 'release' | 'scroll' | 'move'
 ---@alias kak.ui.input.MousePos { line: integer, column: integer }
 
+--- Minimally-coupled handle on the per-session registry.
+--- `kak.ui.open` injects `kak.ui` directly so the global on_key
+--- listener never needs `require('kak.ui')`. Tests that build a
+--- bare `Handler.new({ rpc = conn })` omit `registry` and fall back
+--- to a lazy `require('kak.ui')` so the public session-lookup API
+--- still works in those harnesses.
+---@class kak.ui.input.Registry
+---@field session_for_buf fun(buf: integer): kak.ui.Session?
+---@field current fun(): kak.ui.Session?
+---@field set_current fun(sess: kak.ui.Session?): nil
+---@field _iter fun(): fun(): integer?, kak.ui.Session
+
 ---@class kak.ui.input.Connection : kak.ui.json_rpc.Connection
 
 local M = {}
@@ -194,10 +206,11 @@ local paste_refcount = 0
 ---@field enabled boolean
 ---@field surface? kak.ui.surface.Surface
 ---@field mouse_maps string[]
+---@field registry? kak.ui.input.Registry
 local Handler = {}
 Handler.__index = Handler
 
----@param opts { rpc?: kak.ui.input.Connection, surface?: kak.ui.surface.Surface }
+---@param opts { rpc?: kak.ui.input.Connection, surface?: kak.ui.surface.Surface, registry?: kak.ui.input.Registry }
 ---@return kak.ui.input.Handler
 function M.new(opts)
   return setmetatable({
@@ -206,6 +219,7 @@ function M.new(opts)
     buf = nil,
     enabled = false,
     mouse_maps = {},
+    registry = opts.registry,
   }, Handler)
 end
 
@@ -227,13 +241,59 @@ end
 --- Locate the session that owns the given content buffer, falling
 --- back to the current session. Returns `nil` if no session is live
 --- or the owning session's rpc has been closed.
+---@param registry kak.ui.input.Registry
 ---@param buf integer
 ---@return kak.ui.Session?
-local function session_for_current_buf(buf)
-  local m = require('kak.ui')
-  local sess = m.session_for_buf(buf) or m.current()
+local function session_for_current_buf(registry, buf)
+  local sess = registry.session_for_buf(buf) or registry.current()
   if not sess or not sess.conn or sess.conn:is_closing() then return nil end
   return sess
+end
+
+--- Locate the dead session (closed or about to close) that the
+--- user is sitting in. Three probes in order:
+---   1. `session_for_buf(cur)` -- the session owning this buffer.
+---   2. `current()` -- the most-recently-focused session.
+---   3. any session whose conn is closing -- last-resort sweep.
+--- Returns `nil` when every probe is clean.
+---@param registry kak.ui.input.Registry
+---@param cur integer current buffer
+---@return kak.ui.Session?
+local function find_dead_session(registry, cur)
+  local dead = registry.session_for_buf(cur)
+  if dead and not dead.closed and dead.conn and not dead.conn:is_closing() then return nil end
+  if dead then return dead end
+  local cur_sess = registry.current()
+  if cur_sess and not cur_sess.closed and cur_sess.conn and cur_sess.conn:is_closing() then
+    return cur_sess
+  end
+  for _, s in registry._iter() do
+    if not s.closed and s.conn and s.conn:is_closing() then return s end
+  end
+  return nil
+end
+
+--- Synchronous survivor lookup (mirrors `Session:close`'s selection
+--- loop): the first live, non-dead, non-closing session whose
+--- content_win is still valid.
+---@param registry kak.ui.input.Registry
+---@param dead kak.ui.Session
+---@return kak.ui.Session?
+local function find_survivor(registry, dead)
+  for _, s in registry._iter() do
+    if
+      s ~= dead
+      and not s.closed
+      and s.conn
+      and not s.conn:is_closing()
+      and s.surface
+      and s.surface.content_win
+      and vim.api.nvim_win_is_valid(s.surface.content_win)
+    then
+      return s
+    end
+  end
+  return nil
 end
 
 --- Install the global on_key + paste + per-buffer mouse keymap hooks.
@@ -248,6 +308,17 @@ function Handler:enable()
   -- buffer), so we don't key the routing off it.
   local handler = self
 
+  -- Lazily resolve a registry: handlers created by `kak.ui.open`
+  -- pass one in `opts.registry`; bare `Handler.new({ rpc = conn })`
+  -- calls (tests, third-party embedders) fall back to `require('kak.ui')`
+  -- so the on_key listener can still route via the public registry
+  -- API. The runtime-only fall-through means `input.lua` is not
+  -- part of init.lua's module-load dependency graph.
+  local function registry()
+    if handler.registry then return handler.registry end
+    return require('kak.ui')
+  end
+
   -- Install the global on_key listener ONCE per process and route
   -- every keypress to the session owning the current buffer. A
   -- second `Handler:enable()` only bumps the refcount.
@@ -258,8 +329,9 @@ function Handler:enable()
       -- Per |vim.on_key()|: `typed` is the pre-mapping bytes (what the
       -- user physically pressed). Fall back to nothing when empty.
       if type(typed) ~= 'string' or #typed == 0 then return '' end
+      local reg = registry()
       local cur = vim.api.nvim_get_current_buf()
-      local sess = session_for_current_buf(cur)
+      local sess = session_for_current_buf(reg, cur)
       if not sess then
         -- ANTI-TRAP for the `:q` hang. `vim.system`'s `on_exit`
         -- fires only after stdout EOF (neovim #33627), so there is
@@ -272,70 +344,29 @@ function Handler:enable()
         -- the user must type a "dummy" key first to let the safety
         -- net schedule the close + the next key then routes through
         -- the live session. Avoid the dummy: detect the dead session,
-        -- synchronously find a live SURVIVOR (the same survivor-
-        -- lookup `Session:close` does), flip `current_session` to
-        -- it INLINE, and FORWARD this keypress to the survivor's
+        -- synchronously find a live SURVIVOR, flip `current_session`
+        -- to it INLINE, and FORWARD this keypress to the survivor's
         -- conn. Schedule the dead session's `close()` for the next
         -- tick (the survivor-focus move, dead-window removal, and
         -- daemon kill all live there; the `closed` guard makes the
         -- eventual real `on_exit` close idempotent). If there is no
         -- survivor (last session), the keypress falls through to
         -- '' as before -- there's nowhere to forward it.
-        local m = require('kak.ui')
-        local dead = m.session_for_buf(cur)
-        if not dead or dead.closed or not dead.conn or not dead.conn:is_closing() then
-          local cur_sess = m.current()
-          if cur_sess and not cur_sess.closed and cur_sess.conn and cur_sess.conn:is_closing() then
-            dead = cur_sess
-          else
-            dead = nil
-            for _, s in m._iter() do
-              if not s.closed and s.conn and s.conn:is_closing() then
-                dead = s
-                break
-              end
-            end
-          end
-        end
+        local dead = find_dead_session(reg, cur)
         if dead and not dead.closed and dead.conn and dead.conn:is_closing() then
-          -- Synchronous survivor lookup (mirrors Session:close's
-          -- selection loop): first live, non-dead, non-closing
-          -- session whose content_win is still valid. Same Lua-var
-          -- write as close() -- safe from on_key context.
-          local survivor = nil
-          for _, s in m._iter() do
-            if
-              s ~= dead
-              and not s.closed
-              and s.conn
-              and not s.conn:is_closing()
-              and s.surface
-              and s.surface.content_win
-              and vim.api.nvim_win_is_valid(s.surface.content_win)
-            then
-              survivor = s
-              break
-            end
-          end
+          local survivor = find_survivor(reg, dead)
           if survivor then
             log.debug('on_key: dead session, switching to survivor + forwarding', {
               cur = cur,
               dead_id = dead.id,
               survivor_id = survivor.id,
             })
-            m.set_current(survivor)
-            -- Schedule the dead session's close for cleanup. By the
-            -- time it runs, current_session is already the survivor
-            -- (so close()'s survivor-lookup finds nothing and skips
-            -- the re-switch). The `closed` guard makes a later real
-            -- on_exit -> close idempotent.
+            reg.set_current(survivor)
             local d = dead
             vim.schedule(function()
               pcall(function() d:close() end)
             end)
-            -- Forward THIS keypress to the survivor now, inline.
             sess = survivor
-            -- Fall through to the live-session notify path below.
           else
             log.debug('on_key: dead session, no survivor, drop', {
               cur = cur,
@@ -385,7 +416,7 @@ function Handler:enable()
         end
       end
       local cur = vim.api.nvim_get_current_buf()
-      local sess = session_for_current_buf(cur)
+      local sess = session_for_current_buf(registry(), cur)
       if not sess then return end
       local line, col = mouse_payload()
       if not line or not col then return end
@@ -452,7 +483,7 @@ function Handler:enable()
     ---@return boolean
     vim.paste = function(lines, phase)
       local cur = vim.api.nvim_get_current_buf()
-      local sess = session_for_current_buf(cur)
+      local sess = session_for_current_buf(registry(), cur)
       if not sess then return paste_orig_fn(lines, phase) end
       if phase == -1 or phase == 3 then
         for _, line in ipairs(lines) do

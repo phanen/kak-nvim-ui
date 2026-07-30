@@ -252,38 +252,12 @@ M.full_face_equal = full_face_equal
 ---@type fun(lines: kak.ui.protocol.Lines?): string[]
 M.compose_text = compose_text
 
--- Saved user `guicursor` so we can restore it when the kak session
--- leaves insert/replace (or closes). Lazy: captured on the first
--- insert/replace draw_status so a user who never enters insert keeps
--- their default untouched.
----@type string?
-local orig_guicursor = nil
+-- Cursor-shape swap (BEAM in insert/replace) lives in `cursor.lua`;
+-- keep `apply_cursor_shape` / `restore_cursor_shape` as module-level
+-- shims so existing callers (`init.lua`, `handlers.lua`) don't need
+-- to switch modules. The shared `Cursor` instance inside `cursor.lua`
+-- preserves the previous single-state behaviour.
+M.apply_cursor_shape = require('kak.ui.cursor').apply_cursor_shape
+M.restore_cursor_shape = require('kak.ui.cursor').restore_cursor_shape
 
--- BEAM in insert/replace so the cursor marks the insertion point
--- without covering a character (kakoune's terminal does the same).
--- `a:` applies to every nvim mode since the kak content buffer is
--- always in nvim normal mode; the WinLeave autocmd in `open()`
--- restores the original so non-kak windows keep their own shape.
-local BEAM_GUICURSOR = 'a:ver25-Cursor'
-
---- Switch the nvim cursor shape to match the kakoune mode.
----@param mode string
-function M.apply_cursor_shape(mode)
-  if mode == 'insert' or mode == 'replace' then
-    if orig_guicursor == nil then orig_guicursor = vim.o.guicursor end
-    if vim.o.guicursor ~= BEAM_GUICURSOR then vim.o.guicursor = BEAM_GUICURSOR end
-  elseif orig_guicursor ~= nil then
-    if vim.o.guicursor ~= orig_guicursor then vim.o.guicursor = orig_guicursor end
-    orig_guicursor = nil
-  end
-end
-
---- Restore the user's original `guicursor` (called from WinLeave /
---- Session:close / VimLeavePre so non-kak windows keep their shape).
-function M.restore_cursor_shape()
-  if orig_guicursor ~= nil then
-    if vim.o.guicursor ~= orig_guicursor then vim.o.guicursor = orig_guicursor end
-    orig_guicursor = nil
-  end
-end
 return M

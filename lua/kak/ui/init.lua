@@ -21,6 +21,9 @@ local json_rpc = require('kak.ui.json_rpc')
 local surface_mod = require('kak.ui.ui_surface')
 local handlers = require('kak.ui.handlers')
 local input = require('kak.ui.input')
+local daemon = require('kak.ui.daemon')
+local render = require('kak.ui.render')
+local windowing = require('kak.ui.windowing')
 local log = require('kak.ui.log').log
 
 ---@alias kak.ui.OpenOpts { session?: string, cmd?: string[], extra_args?: string[], cwd?: string, env?: table<string, string> }
@@ -44,15 +47,10 @@ local M = {}
 ---@type table<integer, kak.ui.Session>
 local SESSIONS = {}
 
---- Daemon processes, keyed by kakoune session name. One daemon per
---- unique `<session>` argument; closing the last client for a given
---- session kills its daemon. The tracked value is the `vim.SystemObj`
---- returned by `vim.system` when we spawned `kak -d -s <name>` --
---- either the daemon itself (when we just created it) or a thin
---- `kak -d` client process that connected to an existing daemon
---- (when the session name was already in use).
----@type table<string, vim.SystemObj>
-local DAEMONS = {}
+--- Snapshot of the DAEMONS table for tests. Backed by the `daemon`
+--- module; `M._daemons` proxies the live reference so tests can
+--- observe spawn/kill effects without an extra indirection.
+function M._daemons() return daemon.entries() end
 
 --- Monotonically increasing counter for `gen_session`. Avoids the
 --- same-second collision window when `vim.fn.getpid()` would otherwise
@@ -103,10 +101,6 @@ function M._iter()
   return pairs(SESSIONS) --[[@as fun(): integer?, kak.ui.Session, integer?, kak.ui.Session]]
 end
 
---- Snapshot of the DAEMONS table for tests.
----@return table<string, vim.SystemObj>
-function M._daemons() return DAEMONS end
-
 --- Snapshot of the SESSIONS table for tests. Returns the live
 --- reference so tests can write to it (`ui._sessions()[buf] =
 --- fake_session`) to exercise per-buffer routing paths. Production
@@ -125,64 +119,21 @@ function M._gen_session()
   return string.format('kak-nvim-%d-%d', vim.fn.getpid(), SEQ)
 end
 
---- Make sure a kakoune daemon exists for the given session name and
---- remember it for cleanup.
+--- Spawn a `kak -d -s <session>` daemon if one is not already tracked
+--- for the session name. Thin proxy over `kak.ui.daemon.spawn` so
+--- tests can exercise the path via the public `M._ensure_daemon`
+--- API; production callers go through `M.open` which calls this
+--- helper before constructing the client.
 ---
---- Spawns `kak -d -s <session> -E <preamble>` via `vim.system` so the
---- server process is independent of any single client. The parent
---- nvim does not own a pipe to it (stdout/stderr=false), so closing
---- the last client doesn't kill the daemon via inherited-pipe EOF.
---- The daemon is killed explicitly via `Session:close()` once the
---- last client for `<session>` goes away, and again on `VimLeavePre`
---- as belt-and-suspenders.
----
---- The `-E <preamble>` payload sources + requires the `nvim`
---- windowing module server-side; every client connecting to this
---- session inherits those commands + the `windowing_module nvim`
---- override. The client MUST NOT re-source the preamble
---- (`provide-module` errors with `module 'nvim' already defined`).
----
---- When the session name already exists (e.g. user runs `:Kak
---- --session=foo` against a running foo), `kak -d -s foo` does NOT
---- spawn a duplicate daemon -- it becomes a thin client connected to
---- the existing one. We still track that sysobj; killing it on our
---- close path just disconnects our half of the multiplex without
---- disturbing the foreign daemon.
----
---- Returns nothing; raises if the spawn itself fails (e.g. kak binary
---- not on PATH).
+--- See `kak.ui.daemon` for the spawn details + `-E` preamble wiring.
 ---@param session string
-function M._ensure_daemon(session)
-  if DAEMONS[session] and not DAEMONS[session]:is_closing() then return end
-  local windowing = require('kak.ui.windowing')
-  local argv = windowing.daemon_argv(session)
-  local ok, sys_or_err = pcall(vim.system, argv, {
-    stdout = false,
-    stderr = false,
-  }, nil)
-  if not ok then
-    ---@cast sys_or_err string
-    local err = sys_or_err
-    local sfx = err:match('ENOENT')
-        and '. The command is either not installed, missing from PATH, or not executable.'
-      or string.format(' with error message: %s', err)
-    error(('Spawning kak daemon failed%s'):format(sfx))
-  end
-  ---@cast sys_or_err vim.SystemObj
-  DAEMONS[session] = sys_or_err
-  -- 200ms pragmatic delay for the daemon to bind its socket. A
-  -- future revision could poll `kak -c <session>` for a successful
-  -- connect; today the delay is short enough that interactive `:Kak`
-  -- users won't notice but long enough that the client spawn that
-  -- follows finds the session ready.
-  vim.wait(200, function() return false end, 25)
-end
+function M._ensure_daemon(session) daemon.spawn(session) end
 
 ---@param opts kak.ui.OpenOpts?
 ---@return kak.ui.Session
 function M.open(opts)
   log.debug('open start', { session = opts and opts.session, has_cmd = opts and opts.cmd ~= nil })
-  opts = require('kak.ui.windowing').inject_args(opts)
+  opts = windowing.inject_args(opts)
   local cmd = opts.cmd or { 'kak' }
   local session = opts.session
   local is_fake = opts.cmd ~= nil
@@ -218,7 +169,7 @@ function M.open(opts)
 
   local ui_options = {}
   ---@type kak.ui.HandlerContext
-  local ctx = { ui_options = ui_options, last_force = false }
+  local ctx = { last_force = false }
 
   -- Surface claims the current nvim window and creates the scratch
   -- buffers before we spawn the child process, so handlers can attach
@@ -307,13 +258,46 @@ function M.open(opts)
   -- layout.
   surface.rpc = conn
 
-  local input_handler = input.new({ rpc = conn, surface = surface })
+  -- Inject a registry into the input handler so the global on_key
+  -- listener can resolve current_buf -> Session without falling
+  -- back to the runtime `require('kak.ui')` path. The four
+  -- functions here are the same ones init.lua already exposes
+  -- publicly, just bound by name for the handler's lifetime.
+  local registry = {
+    session_for_buf = M.session_for_buf,
+    current = M.current,
+    set_current = M.set_current,
+    _iter = M._iter,
+  }
+  local input_handler = input.new({ rpc = conn, surface = surface, registry = registry })
   input_handler:enable()
   h.session = nil -- final assignment below
 
   vim.defer_fn(function()
     if not conn:is_closing() then input_handler:report_resize() end
   end, 50)
+
+  --- Pick the first live session whose content window is still
+  --- valid, used by `Session:close` to switch `current_session` to
+  --- a survivor BEFORE tearing the dead session down. Returns nil
+  --- when the closing session is the only one (or no survivor has
+  --- a valid window).
+  ---@param self_session kak.ui.Session
+  ---@return kak.ui.Session?
+  local function select_survivor(self_session)
+    for _, s in pairs(SESSIONS) do
+      if
+        s ~= self_session
+        and not s.closed
+        and s.surface
+        and s.surface.content_win
+        and vim.api.nvim_win_is_valid(s.surface.content_win)
+      then
+        return s
+      end
+    end
+    return nil
+  end
 
   ---@type kak.ui.Session
   sess = {
@@ -335,21 +319,9 @@ function M.open(opts)
       -- this, the user sits in the dead window with no input
       -- routing. `M.set_current` is a Lua-var write -- safe even
       -- from an off-thread on_exit callback.
-      ---@type kak.ui.Session?
       local survivor = nil
       if current_session == self then
-        for _, s in pairs(SESSIONS) do
-          if
-            s ~= self
-            and not s.closed
-            and s.surface
-            and s.surface.content_win
-            and vim.api.nvim_win_is_valid(s.surface.content_win)
-          then
-            survivor = s
-            break
-          end
-        end
+        survivor = select_survivor(self)
         if survivor then M.set_current(survivor) end
       end
       log.debug('close: survivor', { id = survivor and survivor.id })
@@ -384,17 +356,8 @@ function M.open(opts)
       -- sessions (no daemon was ever spawned for them).
       if not is_fake and self.surface and self.surface.session then
         local session_name = self.surface.session
-        local still_used = false
-        for _, s in pairs(SESSIONS) do
-          if s ~= self and not s.closed and s.surface and s.surface.session == session_name then
-            still_used = true
-            break
-          end
-        end
-        if not still_used then
-          local d = DAEMONS[session_name]
-          if d and not d:is_closing() then pcall(function() d:kill(15) end) end
-          DAEMONS[session_name] = nil
+        if not daemon.is_shared(session_name, self, M._iter) then
+          daemon.kill(session_name)
           log.debug('close: daemon killed', { session = session_name })
         end
       end
@@ -419,7 +382,7 @@ function M.open(opts)
       -- Give the user's cursor shape back so a window that replaces
       -- this one (survivor focus or a plain :bd) does not inherit the
       -- insert/replace beam.
-      require('kak.ui.render').restore_cursor_shape()
+      render.restore_cursor_shape()
     end,
   }
   -- Now that `sess` exists, hook the handlers back to it so
@@ -466,7 +429,7 @@ function M.open(opts)
         group = augroup,
         buffer = content_bufnr,
         callback = function()
-          require('kak.ui.render').restore_cursor_shape()
+          render.restore_cursor_shape()
           if saved_timeoutlen ~= nil then
             vim.o.timeoutlen = saved_timeoutlen
             saved_timeoutlen = nil
@@ -541,9 +504,7 @@ vim.api.nvim_create_autocmd('VimLeavePre', {
     for _, s in pairs(SESSIONS) do
       if s.conn then s.conn:terminate() end
     end
-    for _, d in pairs(DAEMONS) do
-      pcall(function() d:kill(15) end)
-    end
+    daemon.kill_all()
   end,
 })
 

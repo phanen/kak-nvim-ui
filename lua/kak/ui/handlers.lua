@@ -1,7 +1,14 @@
 local P = require('kak.ui.protocol')
+local faces_mod = require('kak.ui.faces')
+local popups_mod = require('kak.ui.popups')
+local render = require('kak.ui.render')
+local statusbar = require('kak.ui.statusbar')
 
+--- Per-session cross-notification state. `refresh` only flips
+--- `last_force`; the UI-rendering helpers read it later if they care.
+--- `ui_options` lives on the Handlers directly to keep one source of
+--- truth for the wire contract.
 ---@class kak.ui.HandlerContext
----@field ui_options table<string, any>
 ---@field last_force boolean
 
 ---@class kak.ui.Handlers
@@ -25,9 +32,9 @@ function Handlers.new(opts)
   self.ui_options = opts.ui_options
   self.surface = opts.surface
   self.session = opts.session
-  self.faces = require('kak.ui.faces').new({ cap = 512 })
-  self.renderer = require('kak.ui.render').new({ faces = self.faces })
-  self.popups = require('kak.ui.popups').new({
+  self.faces = faces_mod.new({ cap = 512 })
+  self.renderer = render.new({ faces = self.faces })
+  self.popups = popups_mod.new({
     faces = self.faces,
     renderer = self.renderer,
     surface = opts.surface,
@@ -38,27 +45,33 @@ function Handlers.new(opts)
   return self
 end
 
----@return integer
-function Handlers:ensure_buf()
-  if not self.renderer.content_buf or not vim.api.nvim_buf_is_valid(self.renderer.content_buf) then
-    self.renderer:set_buf(vim.api.nvim_create_buf(false, true))
-    vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = self.renderer.content_buf })
-    vim.api.nvim_set_option_value('swapfile', false, { buf = self.renderer.content_buf })
-  end
-  local buf = self.renderer.content_buf
-  ---@cast buf integer
-  return buf
-end
-
 function Handlers:draw(raw)
   P.expect_array('draw', raw, 5)
-  self:ensure_buf()
   self.renderer:draw(
     P.parse_lines('draw', raw[1], 1),
     P.parse_coord('draw', raw[2], 2),
     P.parse_face('draw', raw[3], 3),
     P.parse_face('draw', raw[4], 4)
   )
+end
+
+--- Parse the Kakoune `draw_status` mode line and return the active
+--- Kakoune mode (`normal` / `insert` / `replace`). Substring match
+--- against every mode-line atom so wrapped forms like `*insert*` or
+--- `[replace]` still register. Replaces a former `==` check that
+--- silently broke when users customised `modelinefmt` to drop the
+--- `{{mode_info}}` token or wrap the mode in colour codes.
+---@param mode_line kak.ui.protocol.Line
+---@return 'normal'|'insert'|'replace'
+local function detect_mode(mode_line)
+  for _, atom in ipairs(mode_line) do
+    local c = atom.contents
+    if type(c) == 'string' then
+      if c:find('replace', 1, true) then return 'replace' end
+      if c:find('insert', 1, true) then return 'insert' end
+    end
+  end
+  return 'normal'
 end
 
 function Handlers:draw_status(raw)
@@ -84,36 +97,15 @@ function Handlers:draw_status(raw)
   -- Track the active Kakoune mode so `_place_cursor` can nudge the real
   -- nvim cursor one cell right in insert/replace (the Kakoune cursor
   -- sits on the just-typed char; we want the block at the insertion
-  -- point). Kakoune's default `modelinefmt` includes `{{mode_info}}`,
-  -- whose `mode_info()` atom for InsertMode emits a leading "insert"
-  -- text atom (StatusLineMode face). The atom `contents` is the
-  -- bare mode name in plain ASCII -- but only IF the user kept the
-  -- default `{{mode_info}}` token. Users who customized modelinefmt
-  -- to drop the token (or wrapped the mode in brackets / a coloured
-  -- prefix) would silently break the previous `==` match. Use a
-  -- substring match against every mode-line atom so wrapped forms
-  -- like "*insert*" or "[replace]" still register. First match wins,
-  -- matching earlier behaviour.
-  local mode = 'normal'
-  for _, atom in ipairs(mode_line) do
-    local c = atom.contents
-    if type(c) == 'string' then
-      if c:find('replace', 1, true) then
-        mode = 'replace'
-        break
-      elseif c:find('insert', 1, true) then
-        mode = 'insert'
-        break
-      end
-    end
-  end
+  -- point).
+  local mode = detect_mode(mode_line)
   self.renderer.current_mode = mode
-  require('kak.ui.render').apply_cursor_shape(mode)
+  render.apply_cursor_shape(mode)
   -- `prompt_active` lets `render._place_cursor` skip the content cursor
   -- while the user is in the command/search/prompt line, so the real
   -- nvim cursor stays in the status float (ui2-style cmdline overlay).
   self.renderer.prompt_active = cursor >= 0
-  require('kak.ui.statusbar').render(
+  statusbar.render(
     self.surface,
     self.renderer,
     prompt,
@@ -188,7 +180,6 @@ function Handlers:set_ui_options(raw)
   if P.absent(raw[1]) or type(raw[1]) ~= 'table' then
     error('set_ui_options: expected object of key/value', 2)
   end
-  self.ctx.ui_options = raw[1]
   for k, v in pairs(raw[1]) do
     self.ui_options[k] = v
   end
