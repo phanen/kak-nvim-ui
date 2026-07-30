@@ -2,6 +2,7 @@ local P = require('kak.ui.protocol')
 local faces_mod = require('kak.ui.faces')
 local popups_mod = require('kak.ui.popups')
 local render = require('kak.ui.render')
+local cursor_shape = require('kak.ui.cursor')
 local statusbar = require('kak.ui.statusbar')
 
 --- Per-session cross-notification state. `refresh` only flips
@@ -100,7 +101,7 @@ function Handlers:draw_status(raw)
   -- point).
   local mode = detect_mode(mode_line)
   self.renderer.current_mode = mode
-  render.apply_cursor_shape(mode)
+  cursor_shape.apply_cursor_shape(mode)
   -- `prompt_active` lets `render._place_cursor` skip the content cursor
   -- while the user is in the command/search/prompt line, so the real
   -- nvim cursor stays in the status float (ui2-style cmdline overlay).

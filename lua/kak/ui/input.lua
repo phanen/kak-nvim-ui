@@ -569,8 +569,6 @@ function Handler:report_resize()
   if self.rpc then pcall(self.rpc.notify, self.rpc, 'resize', { rows, cols }) end
 end
 
-M.nvim_to_kak_exposed = M.nvim_to_kak
-
 --- Test-only handle on the module-level refcount state. Lets tests
 --- assert that the global `vim.on_key` listener + `vim.paste`
 --- override are installed exactly once even when several Handler

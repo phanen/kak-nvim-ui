@@ -39,8 +39,6 @@
 ---@field report_resize fun(self: kak.ui.surface.Surface)
 ---@field focus fun(self: kak.ui.surface.Surface)
 ---@field editor_dims fun(self: kak.ui.surface.Surface): { width: integer, height: integer }
----@field editor_row fun(self: kak.ui.surface.Surface, buf: integer, line: integer): integer?
----@field editor_col fun(self: kak.ui.surface.Surface, buf: integer, column: integer): integer?
 ---@field ensure_status_float fun(self: kak.ui.surface.Surface)
 
 local M = {}
@@ -283,32 +281,6 @@ function Surface:editor_dims()
     width = vim.api.nvim_win_get_width(win),
     height = math.max(1, vim.api.nvim_win_get_height(win) - 1),
   }
-end
-
---- Translate a buffer-relative row to a 0-based screen row inside the
---- content window. Returns `nil` if the row is off-screen or the window
---- is gone.
----@param buf integer
----@param line integer 0-based buffer line
----@return integer?
-function Surface:editor_row(buf, line)
-  local win = self.content_win
-  if not win or not vim.api.nvim_win_is_valid(win) then return nil end
-  if vim.api.nvim_win_get_buf(win) ~= buf then return nil end
-  local firstline = vim.api.nvim_win_firstline(win)
-  local row_offset = vim.api.nvim_win_get_position(win)[1]
-  return math.floor(row_offset + line - (firstline - 1))
-end
-
----@param buf integer
----@param column integer
----@return integer?
-function Surface:editor_col(buf, column)
-  local win = self.content_win
-  if not win or not vim.api.nvim_win_is_valid(win) then return nil end
-  if vim.api.nvim_win_get_buf(win) ~= buf then return nil end
-  local col_offset = vim.api.nvim_win_get_position(win)[2]
-  return col_offset + column
 end
 
 return M

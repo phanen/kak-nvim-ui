@@ -56,7 +56,9 @@ end
 
 --- Iterate tracked daemons. Yield `(session, sysobj)` pairs.
 ---@return fun(): string, vim.SystemObj
-function Registry.iter() return pairs(Registry._entries) --[[@as fun(): string, vim.SystemObj]] end
+function Registry.iter()
+  return pairs(Registry._entries) --[[@as fun(): string, vim.SystemObj]]
+end
 
 --- Lookup the sysobj for `<session>` if any. Returns nil when no
 --- daemon was tracked for the name (e.g. fake-kak clients).

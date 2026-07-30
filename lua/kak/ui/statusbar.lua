@@ -25,36 +25,7 @@ local NS = vim.api.nvim_create_namespace('kak.ui.statusbar')
 local function clean(text) return (text:gsub('[\r\n]', '')) end
 
 --- Concat a Line into flat text and build one span per atom. Returns
---- the joined text, its display width (so CJK contributes 1 cell, not
---- 1 byte), and the list of `{b0, b1, hl_group}` spans.
----@param line kak.ui.protocol.Line?
----@param default_face kak.ui.faces.Face?
----@param cache kak.ui.faces.Cache
----@return string text, integer display_width, { [1]: integer, [2]: integer, [3]: string }[] spans
-local function line_to_parts(line, default_face, cache)
-  local parts = {}
-  local spans = {}
-  local byte = 0
-  for _, atom in ipairs(line or {}) do
-    local text = clean(atom.contents or '')
-    parts[#parts + 1] = text
-    local merged = faces.merge(default_face, atom.face)
-    spans[#spans + 1] = { byte, byte + #text, cache:get(merged) }
-    byte = byte + #text
-  end
-  local joined = table.concat(parts)
-  return joined, vim.fn.strdisplaywidth(joined), spans
-end
-
----@class kak.ui.statusbar.Built
----@field text string
----@field spans { [1]: integer, [2]: integer, [3]: string }[]
----@field prompt_len integer byte length of the prompt portion
----@field content_str string concatenated cleaned content atoms
-
---- Concat a Line into `(text, spans)` and return them. Local
---- because we only need the byte-level view here; `line_to_parts`
---- stays public for callers that also need display width.
+--- the joined text and the list of `{b0, b1, hl_group}` spans.
 ---@param line kak.ui.protocol.Line?
 ---@param default_face kak.ui.faces.Face?
 ---@param cache kak.ui.faces.Cache
@@ -72,6 +43,12 @@ local function line_to_text_spans(line, default_face, cache)
   end
   return table.concat(parts), spans
 end
+
+---@class kak.ui.statusbar.Built
+---@field text string
+---@field spans { [1]: integer, [2]: integer, [3]: string }[]
+---@field prompt_len integer byte length of the prompt portion
+---@field content_str string concatenated cleaned content atoms
 
 --- Build the single statusbar line. Prompt on the left, content next,
 --- pad with spaces, then right-justified `mode_line`. The mode_line is
@@ -102,7 +79,8 @@ function M.build_line(prompt, content, mode_line, default_face, cols, cache)
   local left_text = prompt_text .. content_str
   local left_display = vim.fn.strdisplaywidth(left_text)
 
-  local mode_text, mode_display, mode_spans = line_to_parts(mode_line, default_face, cache)
+  local mode_text, mode_spans = line_to_text_spans(mode_line, default_face, cache)
+  local mode_display = vim.fn.strdisplaywidth(mode_text)
 
   -- Pad only when there is a mode_line AND it fits on the right.
   if mode_text == '' then

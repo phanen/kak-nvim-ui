@@ -187,11 +187,11 @@ describe('cursor placement', function()
 
   it('apply_cursor_shape sets a beam in insert/replace and restores otherwise', function()
     local r = h.exec_lua(function()
-      local render = require('kak.ui.render')
+      local cursor = require('kak.ui.cursor')
       local before = vim.o.guicursor
-      render.apply_cursor_shape('insert')
+      cursor.apply_cursor_shape('insert')
       local beam = vim.o.guicursor
-      render.apply_cursor_shape('normal')
+      cursor.apply_cursor_shape('normal')
       local restored = vim.o.guicursor
       return { before = before, beam = beam, restored = restored }
     end)

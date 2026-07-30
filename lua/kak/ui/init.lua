@@ -22,7 +22,7 @@ local surface_mod = require('kak.ui.ui_surface')
 local handlers = require('kak.ui.handlers')
 local input = require('kak.ui.input')
 local daemon = require('kak.ui.daemon')
-local render = require('kak.ui.render')
+local cursor = require('kak.ui.cursor')
 local windowing = require('kak.ui.windowing')
 local log = require('kak.ui.log').log
 
@@ -382,7 +382,7 @@ function M.open(opts)
       -- Give the user's cursor shape back so a window that replaces
       -- this one (survivor focus or a plain :bd) does not inherit the
       -- insert/replace beam.
-      render.restore_cursor_shape()
+      cursor.restore_cursor_shape()
     end,
   }
   -- Now that `sess` exists, hook the handlers back to it so
@@ -429,7 +429,7 @@ function M.open(opts)
         group = augroup,
         buffer = content_bufnr,
         callback = function()
-          render.restore_cursor_shape()
+          cursor.restore_cursor_shape()
           if saved_timeoutlen ~= nil then
             vim.o.timeoutlen = saved_timeoutlen
             saved_timeoutlen = nil

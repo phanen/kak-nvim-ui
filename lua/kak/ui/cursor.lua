@@ -69,7 +69,6 @@ end
 local shared = Cursor.new()
 
 ---@class kak.ui.cursor.Module
----@field new fun(): kak.ui.cursor.Cursor
 ---@field apply_cursor_shape fun(mode: string)
 ---@field restore_cursor_shape fun()
 local M = {}
@@ -78,7 +77,5 @@ local M = {}
 function M.apply_cursor_shape(mode) shared:apply(mode) end
 
 function M.restore_cursor_shape() shared:restore() end
-
-M.new = Cursor.new
 
 return M

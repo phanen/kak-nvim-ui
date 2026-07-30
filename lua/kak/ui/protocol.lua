@@ -135,18 +135,4 @@ function M.check_enum(method, val, valid, idx)
   return val
 end
 
---- Encode a UI -> Kakoune notification.
----@param method string
----@param params any[]
----@return { jsonrpc: string, method: string, params: any[] }
-function M.encode_notify(method, params)
-  assert(type(method) == 'string', 'method must be string')
-  assert(type(params) == 'table', 'params must be array')
-  return {
-    jsonrpc = '2.0',
-    method = method,
-    params = params,
-  }
-end
-
 return M

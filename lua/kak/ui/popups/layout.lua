@@ -371,8 +371,4 @@ function M.lines_to_text(lines)
   return out
 end
 
----@param geom kak.ui.popups.layout.Geom
----@return string
-function M.dump(geom) return vim.inspect(geom) end
-
 return M

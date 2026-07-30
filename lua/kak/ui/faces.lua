@@ -50,7 +50,7 @@ end
 local bit = require('bit')
 
 ---@type table<string, integer>
-M._attr_bit = {
+local ATTR_BIT = {
   underline = bit.lshift(1, 0),
   curly_underline = bit.lshift(1, 1),
   double_underline = bit.lshift(1, 2),
@@ -73,13 +73,6 @@ local BOLD_BIT = bit.lshift(1, 4)
 local ITALIC_BIT = bit.lshift(1, 5)
 local STRIKE_BIT = bit.lshift(1, 6)
 
----@type table<integer, string>
-local ATTR_NAMES = {}
-for name, attr_bit in pairs(M._attr_bit) do
-  ATTR_NAMES[attr_bit] = name
-end
-M._ATTR_NAMES = ATTR_NAMES
-
 ---@param attrs string[]?
 ---@return integer
 local function attrs_to_bits(attrs)
@@ -89,7 +82,7 @@ local function attrs_to_bits(attrs)
   for _, a in ipairs(attrs) do
     if not seen[a] then
       seen[a] = true
-      bits = bit.bor(bits, M._attr_bit[a] or 0)
+      bits = bit.bor(bits, ATTR_BIT[a] or 0)
     end
   end
   return bits

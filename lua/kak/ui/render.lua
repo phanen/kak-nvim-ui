@@ -234,8 +234,8 @@ function Renderer:_place_cursor(buf, coord, _face_for_default)
   -- (after the just-typed char). The insert/replace off-by-one is NOT
   -- fixed by nudging the column (a block covers a full cell either
   -- way -- shifting right just hides the NEXT char instead); instead
-  -- `M.apply_cursor_shape` swaps the nvim cursor to a beam in
-  -- insert/replace so the vertical bar marks the insertion point
+  -- `kak.ui.cursor.apply_cursor_shape` swaps the nvim cursor to a beam
+  -- in insert/replace so the vertical bar marks the insertion point
   -- without covering any character, mirroring kakoune's terminal UI.
   local col = column_to_byte(line_text, coord.column)
   self.last_cursor = { line = row, column = col }
@@ -251,13 +251,5 @@ M.codepoint_width = codepoint_width
 M.full_face_equal = full_face_equal
 ---@type fun(lines: kak.ui.protocol.Lines?): string[]
 M.compose_text = compose_text
-
--- Cursor-shape swap (BEAM in insert/replace) lives in `cursor.lua`;
--- keep `apply_cursor_shape` / `restore_cursor_shape` as module-level
--- shims so existing callers (`init.lua`, `handlers.lua`) don't need
--- to switch modules. The shared `Cursor` instance inside `cursor.lua`
--- preserves the previous single-state behaviour.
-M.apply_cursor_shape = require('kak.ui.cursor').apply_cursor_shape
-M.restore_cursor_shape = require('kak.ui.cursor').restore_cursor_shape
 
 return M
